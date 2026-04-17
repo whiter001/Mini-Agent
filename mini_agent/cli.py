@@ -30,11 +30,14 @@ from prompt_toolkit.styles import Style
 from mini_agent import LLMClient
 from mini_agent.agent import Agent
 from mini_agent.config import Config
-from mini_agent.schema import LLMProvider
+from mini_agent.schema import LLMProvider, Message
+from mini_agent.memory_store import MemoryStore
 from mini_agent.tools.base import Tool
 from mini_agent.tools.bash_tool import BashKillTool, BashOutputTool, BashTool
+from mini_agent.tools.auto_skill import build_auto_skill_context, maybe_create_auto_skill
 from mini_agent.tools.file_tools import EditTool, ReadTool, WriteTool
 from mini_agent.tools.mcp_loader import cleanup_mcp_connections, load_mcp_tools_async, set_mcp_timeout_config
+from mini_agent.tools.memory_tools import create_memory_tools
 from mini_agent.tools.note_tool import SessionNoteTool
 from mini_agent.tools.skill_tool import create_skill_tools
 from mini_agent.utils import calculate_display_width
@@ -345,11 +348,12 @@ async def initialize_base_tools(config: Config):
         config: Configuration object
 
     Returns:
-        Tuple of (list of tools, skill loader if skills enabled)
+        Tuple of (list of tools, skill loader if skills enabled, memory store if enabled)
     """
 
     tools = []
     skill_loader = None
+    memory_store = None
 
     # 1. Bash auxiliary tools (output monitoring and kill)
     # Note: BashTool itself is created in add_workspace_tools() with workspace_dir as cwd
@@ -361,6 +365,16 @@ async def initialize_base_tools(config: Config):
         bash_kill_tool = BashKillTool()
         tools.append(bash_kill_tool)
         print(f"{Colors.GREEN}✅ Loaded Bash Kill tool{Colors.RESET}")
+
+    # 2. Durable memory tools
+    if config.tools.enable_memory:
+        print(f"{Colors.BRIGHT_CYAN}Loading durable memory...{Colors.RESET}")
+        try:
+            memory_tools, memory_store = create_memory_tools()
+            tools.extend(memory_tools)
+            print(f"{Colors.GREEN}✅ Loaded durable memory tools{Colors.RESET}")
+        except Exception as e:
+            print(f"{Colors.YELLOW}⚠️  Failed to load durable memory: {e}{Colors.RESET}")
 
     # 3. Claude Skills (loaded from package directory)
     if config.tools.enable_skills:
@@ -388,7 +402,8 @@ async def initialize_base_tools(config: Config):
                         skills_dir = str(path.resolve())
                         break
 
-            skill_tools, skill_loader = create_skill_tools(skills_dir)
+            extra_skill_dirs = [str(Path(path).expanduser()) for path in config.tools.skills_external_dirs]
+            skill_tools, skill_loader = create_skill_tools(skills_dir, extra_skill_dirs=extra_skill_dirs)
             if skill_tools:
                 tools.extend(skill_tools)
                 print(f"{Colors.GREEN}✅ Loaded Skill tool (get_skill){Colors.RESET}")
@@ -428,7 +443,44 @@ async def initialize_base_tools(config: Config):
             print(f"{Colors.YELLOW}⚠️  Failed to load MCP tools: {e}{Colors.RESET}")
 
     print()  # Empty line separator
-    return tools, skill_loader
+    return tools, skill_loader, memory_store
+
+
+def build_turn_context(memory_store: MemoryStore | None, skill_loader, query: str, max_skills: int) -> list[Message]:
+    """Build temporary per-turn context from durable memory and auto-selected skills."""
+    context: list[Message] = []
+    if memory_store is not None:
+        context.extend(memory_store.build_turn_context(query))
+    if skill_loader is not None:
+        context.extend(build_auto_skill_context(skill_loader, query, max_skills=max_skills))
+    return context
+
+
+def _maybe_persist_auto_skill(
+    config: Config,
+    skill_loader,
+    agent: Agent,
+    turn_start_index: int,
+    final_result: str,
+) -> None:
+    if not config.tools.enable_auto_skill_creation:
+        return
+
+    turn_messages = agent.get_history()[turn_start_index:]
+    result = maybe_create_auto_skill(
+        skill_loader,
+        turn_messages,
+        final_result,
+        auto_skill_dir=config.tools.auto_skill_dir,
+        min_tool_calls=config.tools.auto_skill_min_tool_calls,
+    )
+    if result.created:
+        if skill_loader is not None:
+            skill_loader.discover_skills()
+        print(
+            f"{Colors.BRIGHT_GREEN}🧠 Auto skill created:{Colors.RESET} "
+            f"{result.skill_name} -> {result.skill_path}"
+        )
 
 
 def add_workspace_tools(tools: List[Tool], config: Config, workspace_dir: Path):
@@ -572,7 +624,7 @@ async def run_agent(workspace_dir: Path, task: str = None):
         print(f"{Colors.GREEN}✅ LLM retry mechanism enabled (max {config.llm.retry.max_retries} retries){Colors.RESET}")
 
     # 3. Initialize base tools (independent of workspace)
-    tools, skill_loader = await initialize_base_tools(config)
+    tools, skill_loader, memory_store = await initialize_base_tools(config)
 
     # 4. Add workspace-dependent tools
     add_workspace_tools(tools, config, workspace_dir)
@@ -600,6 +652,12 @@ async def run_agent(workspace_dir: Path, task: str = None):
         # Remove placeholder if skills not enabled
         system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
 
+    if memory_store:
+        memory_prompt = memory_store.build_system_prompt()
+        if memory_prompt:
+            system_prompt = f"{system_prompt.rstrip()}\n\n{memory_prompt}"
+            print(f"{Colors.GREEN}✅ Injected persistent memory into system prompt{Colors.RESET}")
+
     # 7. Create Agent
     agent = Agent(
         llm_client=llm_client,
@@ -617,12 +675,16 @@ async def run_agent(workspace_dir: Path, task: str = None):
     # 8.5 Non-interactive mode: execute task and exit
     if task:
         print(f"\n{Colors.BRIGHT_BLUE}Agent{Colors.RESET} {Colors.DIM}›{Colors.RESET} {Colors.DIM}Executing task...{Colors.RESET}\n")
+        turn_start_index = len(agent.messages)
         agent.add_user_message(task)
+        agent.set_ephemeral_context(build_turn_context(memory_store, skill_loader, task, config.tools.auto_skills_limit))
         try:
-            await agent.run()
+            final_result = await agent.run()
+            _maybe_persist_auto_skill(config, skill_loader, agent, turn_start_index, final_result)
         except Exception as e:
             print(f"\n{Colors.RED}❌ Error: {e}{Colors.RESET}")
         finally:
+            agent.clear_ephemeral_context()
             print_stats(agent, session_start)
 
         # Cleanup MCP connections
@@ -747,7 +809,9 @@ async def run_agent(workspace_dir: Path, task: str = None):
             print(
                 f"\n{Colors.BRIGHT_BLUE}Agent{Colors.RESET} {Colors.DIM}›{Colors.RESET} {Colors.DIM}Thinking... (Esc to cancel){Colors.RESET}\n"
             )
+            turn_start_index = len(agent.messages)
             agent.add_user_message(user_input)
+            agent.set_ephemeral_context(build_turn_context(memory_store, skill_loader, user_input, config.tools.auto_skills_limit))
 
             # Create cancellation event
             cancel_event = asyncio.Event()
@@ -816,7 +880,8 @@ async def run_agent(workspace_dir: Path, task: str = None):
                     await asyncio.sleep(0.1)
 
                 # Get result
-                _ = agent_task.result()
+                final_result = agent_task.result()
+                _maybe_persist_auto_skill(config, skill_loader, agent, turn_start_index, final_result)
 
             except asyncio.CancelledError:
                 print(f"\n{Colors.BRIGHT_YELLOW}⚠️  Agent execution cancelled{Colors.RESET}")
@@ -824,6 +889,7 @@ async def run_agent(workspace_dir: Path, task: str = None):
                 agent.cancel_event = None
                 esc_listener_stop.set()
                 esc_thread.join(timeout=0.2)
+                agent.clear_ephemeral_context()
 
             # Visual separation
             print(f"\n{Colors.DIM}{'─' * 60}{Colors.RESET}\n")

@@ -47,6 +47,14 @@ tools:
   
   # Claude Skills
   enable_skills: true      # Enable Skills
+  enable_auto_skills: true # Auto-load relevant skills for each request
+  auto_skills_limit: 2     # Maximum number of auto-loaded skills
+  enable_memory: true      # Enable durable memory support
+  enable_auto_skill_creation: true  # Persist reusable workflows as skills
+  auto_skill_min_tool_calls: 5      # Minimum tool calls before auto-creating a skill
+  auto_skill_dir: "~/.mini-agent/skills"  # Local directory for generated skills
+  skills_external_dirs:
+    - "~/.mini-agent/skills"         # Scan generated skills alongside bundled skills
   skills_dir: "./skills"   # Skills directory path
   
   # MCP Tools

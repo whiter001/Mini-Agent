@@ -7,7 +7,7 @@ Supports loading skills from SKILL.md files and providing them to Agent
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -21,7 +21,7 @@ class Skill:
     content: str
     license: Optional[str] = None
     allowed_tools: Optional[List[str]] = None
-    metadata: Optional[Dict[str, str]] = None
+    metadata: Optional[Dict[str, Any]] = None
     skill_path: Optional[Path] = None
 
     def to_prompt(self) -> str:
@@ -47,15 +47,76 @@ All files and references in this skill are relative to this directory.
 class SkillLoader:
     """Skill loader"""
 
-    def __init__(self, skills_dir: str = "./skills"):
+    _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+")
+
+    def __init__(self, skills_dir: str = "./skills", extra_skills_dirs: Optional[List[str]] = None):
         """
         Initialize Skill Loader
 
         Args:
             skills_dir: Skills directory path
+            extra_skills_dirs: Additional skill directories to scan
         """
         self.skills_dir = Path(skills_dir)
+        self.extra_skills_dirs = [Path(path) for path in (extra_skills_dirs or [])]
         self.loaded_skills: Dict[str, Skill] = {}
+
+    def _flatten_metadata(self, value: Any) -> str:
+        """Convert nested metadata values into searchable text."""
+        if value is None:
+            return ""
+        if isinstance(value, dict):
+            return " ".join(
+                f"{key} {self._flatten_metadata(subvalue)}"
+                for key, subvalue in value.items()
+            )
+        if isinstance(value, (list, tuple, set)):
+            return " ".join(self._flatten_metadata(item) for item in value)
+        return str(value)
+
+    def _tokenize(self, text: str) -> set[str]:
+        """Split text into normalized search tokens."""
+        return {
+            token.lower()
+            for token in self._TOKEN_PATTERN.findall(text.lower())
+            if len(token) > 1
+        }
+
+    def _build_search_text(self, skill: Skill) -> str:
+        """Build the searchable text for a skill."""
+        metadata_text = self._flatten_metadata(skill.metadata)
+        return " ".join(
+            part
+            for part in [
+                skill.name,
+                skill.name,
+                skill.description,
+                skill.description,
+                metadata_text,
+                skill.content[:2000],
+            ]
+            if part
+        )
+
+    def _score_skill(self, skill: Skill, query_terms: set[str], query_text: str) -> int:
+        """Score how relevant a skill is for the query."""
+        search_text = self._build_search_text(skill)
+        skill_terms = self._tokenize(search_text)
+        score = len(query_terms & skill_terms)
+
+        normalized_name = skill.name.lower().replace("-", " ")
+        if normalized_name and normalized_name in query_text:
+            score += 5
+
+        normalized_description = skill.description.lower()
+        if normalized_description and normalized_description in query_text:
+            score += 3
+
+        metadata_text = self._flatten_metadata(skill.metadata).lower()
+        if metadata_text and metadata_text in query_text:
+            score += 2
+
+        return score
 
     def load_skill(self, skill_path: Path) -> Optional[Skill]:
         """
@@ -199,19 +260,68 @@ class SkillLoader:
             List of Skills
         """
         skills = []
+        self.loaded_skills = {}
 
-        if not self.skills_dir.exists():
-            print(f"⚠️  Skills directory does not exist: {self.skills_dir}")
-            return skills
+        for skills_dir in self._iter_skill_dirs():
+            if not skills_dir.exists():
+                continue
 
-        # Recursively find all SKILL.md files
-        for skill_file in self.skills_dir.rglob("SKILL.md"):
-            skill = self.load_skill(skill_file)
-            if skill:
-                skills.append(skill)
-                self.loaded_skills[skill.name] = skill
+            # Recursively find all SKILL.md files
+            for skill_file in skills_dir.rglob("SKILL.md"):
+                skill = self.load_skill(skill_file)
+                if skill and skill.name not in self.loaded_skills:
+                    skills.append(skill)
+                    self.loaded_skills[skill.name] = skill
 
         return skills
+
+    def _iter_skill_dirs(self) -> List[Path]:
+        """Return skill directories in precedence order."""
+        skill_dirs = [self.skills_dir, *self.extra_skills_dirs]
+        unique_dirs = []
+        seen = set()
+        for skill_dir in skill_dirs:
+            resolved = str(skill_dir.expanduser().resolve())
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            unique_dirs.append(skill_dir.expanduser())
+        return unique_dirs
+
+    def select_relevant_skills(self, query: str, max_skills: int = 2) -> List[Skill]:
+        """Select the most relevant skills for a user request."""
+        if max_skills <= 0 or not query.strip():
+            return []
+
+        query_terms = self._tokenize(query)
+        if not query_terms:
+            return []
+
+        query_text = query.lower()
+        scored_skills = []
+        for skill in self.loaded_skills.values():
+            score = self._score_skill(skill, query_terms, query_text)
+            if score > 0:
+                scored_skills.append((score, skill.name.lower(), skill))
+
+        scored_skills.sort(key=lambda item: (-item[0], item[1]))
+        return [skill for _, _, skill in scored_skills[:max_skills]]
+
+    def get_auto_skills_prompt(self, query: str, max_skills: int = 2) -> str:
+        """Build a prompt block for the skills selected for this request."""
+        selected_skills = self.select_relevant_skills(query, max_skills=max_skills)
+        if not selected_skills:
+            return ""
+
+        prompt_parts = [
+            "## Auto-loaded Skills",
+            "The following skills were selected automatically for the current request. Follow them as the primary guidance for this turn.",
+        ]
+
+        for skill in selected_skills:
+            prompt_parts.append(skill.to_prompt().strip())
+
+        return "\n\n".join(prompt_parts)
 
     def get_skill(self, name: str) -> Optional[Skill]:
         """

@@ -10,6 +10,9 @@ This project comes packed with features designed for a robust and intelligent ag
 *   ✅ **Persistent Memory**: An active **Session Note Tool** ensures the agent retains key information across multiple sessions.
 *   ✅ **Intelligent Context Management**: Automatically summarizes conversation history to handle contexts up to a configurable token limit, enabling infinitely long tasks.
 *   ✅ **Claude Skills Integration**: Comes with 15 professional skills for documents, design, testing, and development.
+*   ✅ **Auto Skills**: Relevant skills are selected from the current request and injected automatically, inspired by Hermes Agent.
+*   ✅ **Auto Skill Creation**: Reusable workflows can be persisted to `~/.mini-agent/skills/` and picked up on future runs.
+*   ✅ **Persistent Memory**: Durable notes and user facts are stored under `~/.mini-agent/` with searchable SQLite-backed recall.
 *   ✅ **MCP Tool Integration**: Natively supports MCP for tools like knowledge graph access and web search.
 *   ✅ **Comprehensive Logging**: Detailed logs for every request, response, and tool execution for easy debugging.
 *   ✅ **Clean & Simple Design**: A beautiful CLI and a codebase that is easy to understand, making it the perfect starting point for building advanced agents.
@@ -70,9 +73,7 @@ Both usage modes require uv. If you don't have it installed:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Windows (PowerShell)
-python -m pip install --user pipx
-python -m pipx ensurepath
-# Restart PowerShell after installation
+irm https://astral.sh/uv/install.ps1 | iex
 
 # After installation, restart your terminal or run:
 source ~/.bashrc  # or ~/.zshrc (macOS/Linux)
@@ -119,6 +120,8 @@ api_base: "https://api.minimax.io"  # Global
 model: "MiniMax-M2.5"
 ```
 
+Auto-generated skills are stored in `~/.mini-agent/skills/` by default and are scanned alongside bundled skills.
+
 **Start Using:**
 
 ```bash
@@ -152,11 +155,6 @@ irm https://astral.sh/uv/install.ps1 | iex
 
 # 3. Sync dependencies
 uv sync
-
-# Alternative: Install dependencies manually (if not using uv)
-# pip install -r requirements.txt
-# Or install required packages:
-# pip install tiktoken pyyaml httpx pydantic requests prompt-toolkit mcp
 
 # 4. Initialize Claude Skills (Optional)
 git submodule update --init --recursive
@@ -296,7 +294,7 @@ async with httpx.AsyncClient(timeout=120.0, verify=False) as client:
 **Production solution**:
 ```bash
 # Update certificates
-pip install --upgrade certifi
+uv sync --upgrade-package certifi
 
 # Or configure system proxy/certificates
 ```

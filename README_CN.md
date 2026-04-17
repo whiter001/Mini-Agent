@@ -10,6 +10,9 @@
 *   ✅ **持久化记忆**：通过内置的 **Session Note Tool**，Agent 能够在多个会话中保留关键信息。
 *   ✅ **智能上下文管理**：自动对会话历史进行摘要，可处理长达可配置 Token 上限的上下文，从而支持无限长的任务。
 *   ✅ **集成 Claude Skills**：内置 15 种专业技能，涵盖文档处理、设计、测试和开发等领域。
+*   ✅ **自动技能加载**：会根据当前请求自动选择并注入相关技能，参考 Hermes Agent 的做法。
+*   ✅ **自动技能创建**：可将可复用的工作流持久化到 `~/.mini-agent/skills/`，供后续任务自动复用。
+*   ✅ **持久化记忆**：在 `~/.mini-agent/` 下保存可搜索的长期记忆与用户画像。
 *   ✅ **集成 MCP 工具**：原生支持 MCP 协议，可轻松接入知识图谱、网页搜索等工具。
 *   ✅ **全面的日志记录**：为每个请求、响应和工具执行提供详细日志，便于调试。
 *   ✅ **简洁明了的设计**：美观的命令行界面和易于理解的代码库，使其成为构建高级 Agent 的理想起点。
@@ -70,9 +73,7 @@ MiniMax 提供国内和海外两个平台，请根据您的网络环境选择：
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Windows (PowerShell)
-python -m pip install --user pipx
-python -m pipx ensurepath
-# 安装后需要重启 PowerShell
+irm https://astral.sh/uv/install.ps1 | iex
 
 # 安装完成后，重启终端或运行：
 source ~/.bashrc  # 或 ~/.zshrc (macOS/Linux)
@@ -119,6 +120,8 @@ api_base: "https://api.minimaxi.com"  # 国内版
 model: "MiniMax-M2.5"
 ```
 
+自动生成的 skills 默认存放在 `~/.mini-agent/skills/`，并会与内置 skills 一起扫描加载。
+
 **开始使用：**
 
 ```bash
@@ -152,11 +155,6 @@ irm https://astral.sh/uv/install.ps1 | iex
 
 # 3. 同步依赖
 uv sync
-
-# 替代方案: 手动安装依赖（如果不使用 uv）
-# pip install -r requirements.txt
-# 或者安装必需的包:
-# pip install tiktoken pyyaml httpx pydantic requests prompt-toolkit mcp
 
 # 4. 初始化 Claude Skills（可选）
 git submodule update --init --recursive
@@ -297,7 +295,7 @@ async with httpx.AsyncClient(timeout=120.0, verify=False) as client:
 **生产环境解决方案**:
 ```bash
 # 更新证书
-pip install --upgrade certifi
+uv sync --upgrade-package certifi
 
 # 或配置系统代理/证书
 ```

@@ -59,6 +59,7 @@ class Agent:
         self.max_steps = max_steps
         self.token_limit = token_limit
         self.workspace_dir = Path(workspace_dir)
+        self._ephemeral_messages: list[Message] = []
         # Cancellation event for interrupting agent execution (set externally, e.g., by Esc key)
         self.cancel_event: Optional[asyncio.Event] = None
 
@@ -86,6 +87,18 @@ class Agent:
     def add_user_message(self, content: str):
         """Add a user message to history."""
         self.messages.append(Message(role="user", content=content))
+
+    def set_ephemeral_context(self, messages: list[Message]) -> None:
+        """Set temporary messages that only apply to the next run."""
+        self._ephemeral_messages = messages
+
+    def clear_ephemeral_context(self) -> None:
+        """Clear temporary run-only messages."""
+        self._ephemeral_messages = []
+
+    def _get_active_messages(self) -> list[Message]:
+        """Return the message list used for the next LLM call."""
+        return self.messages + self._ephemeral_messages
 
     def _check_cancelled(self) -> bool:
         """Check if agent execution has been cancelled.
@@ -364,12 +377,13 @@ Requirements:
 
             # Get tool list for LLM call
             tool_list = list(self.tools.values())
+            active_messages = self._get_active_messages()
 
             # Log LLM request and call LLM with Tool objects directly
-            self.logger.log_request(messages=self.messages, tools=tool_list)
+            self.logger.log_request(messages=active_messages, tools=tool_list)
 
             try:
-                response = await self.llm.generate(messages=self.messages, tools=tool_list)
+                response = await self.llm.generate(messages=active_messages, tools=tool_list)
             except Exception as e:
                 # Check if it's a retry exhausted error
                 from .retry import RetryExhaustedError

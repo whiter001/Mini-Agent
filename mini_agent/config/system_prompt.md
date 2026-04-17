@@ -19,11 +19,20 @@ Skills are loaded dynamically using **Progressive Disclosure**:
 1. Check the metadata below to identify relevant skills for your task
 2. Call `get_skill(skill_name)` to load the full guidance
 3. Follow the skill's instructions and use appropriate tools (bash, file operations, etc.)
+4. If a relevant skill block is already auto-loaded for the current turn, treat it as the primary guidance for that request
 
 **Important Notes:**
 - Skills provide expert patterns and procedural knowledge
 - **For Python skills** (pdf, pptx, docx, xlsx, canvas-design, algorithmic-art): Setup Python environment FIRST (see Python Environment Management below)
 - Skills may reference scripts and resources - use bash or read_file to access them
+
+### 3. **Persistent Memory**
+Durable memory is stored under `~/.mini-agent/`:
+- `MEMORY.md` for agent notes and reusable learnings
+- `USER.md` for user preferences and profile facts
+- `memory.sqlite3` for searchable history
+
+Use `remember` to store durable agent notes, `remember_user` to store user profile facts, and `search_memory` to recall relevant history.
 
 ---
 

@@ -55,6 +55,13 @@ class ToolsConfig(BaseModel):
 
     # Skills
     enable_skills: bool = True
+    enable_auto_skills: bool = True
+    auto_skills_limit: int = 2
+    enable_memory: bool = True
+    enable_auto_skill_creation: bool = True
+    auto_skill_min_tool_calls: int = 5
+    auto_skill_dir: str = "~/.mini-agent/skills"
+    skills_external_dirs: list[str] = Field(default_factory=lambda: ["~/.mini-agent/skills"])
     skills_dir: str = "./skills"
 
     # MCP tools
@@ -151,6 +158,13 @@ class Config(BaseModel):
             enable_bash=tools_data.get("enable_bash", True),
             enable_note=tools_data.get("enable_note", True),
             enable_skills=tools_data.get("enable_skills", True),
+            enable_auto_skills=tools_data.get("enable_auto_skills", True),
+            auto_skills_limit=tools_data.get("auto_skills_limit", 2),
+            enable_memory=tools_data.get("enable_memory", True),
+            enable_auto_skill_creation=tools_data.get("enable_auto_skill_creation", True),
+            auto_skill_min_tool_calls=tools_data.get("auto_skill_min_tool_calls", 5),
+            auto_skill_dir=tools_data.get("auto_skill_dir", "~/.mini-agent/skills"),
+            skills_external_dirs=tools_data.get("skills_external_dirs", ["~/.mini-agent/skills"]),
             skills_dir=tools_data.get("skills_dir", "./skills"),
             enable_mcp=tools_data.get("enable_mcp", True),
             mcp_config_path=tools_data.get("mcp_config_path", "mcp.json"),

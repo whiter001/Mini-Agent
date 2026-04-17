@@ -86,4 +86,5 @@ async def test_acp_invalid_session(acp_agent):
     agent, _ = acp_agent
     prompt = SimpleNamespace(sessionId="missing", prompt=[{"text": "?"}])
     response = await agent.prompt(prompt)
-    assert response.stopReason == "refusal"
+    assert response.stopReason == "end_turn"
+    assert len(agent._sessions) == 1

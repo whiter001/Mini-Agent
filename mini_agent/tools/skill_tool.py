@@ -56,6 +56,7 @@ class GetSkillTool(Tool):
 
 def create_skill_tools(
     skills_dir: str = "./skills",
+    extra_skills_dirs: Optional[List[str]] = None,
 ) -> tuple[List[Tool], Optional[SkillLoader]]:
     """
     Create skill tool for Progressive Disclosure
@@ -65,16 +66,17 @@ def create_skill_tools(
 
     Args:
         skills_dir: Skills directory path
+        extra_skills_dirs: Additional skill directories to scan
 
     Returns:
         Tuple of (list of tools, skill loader)
     """
     # Create skill loader
-    loader = SkillLoader(skills_dir)
+    loader = SkillLoader(skills_dir, extra_skills_dirs)
 
     # Discover and load skills
     skills = loader.discover_skills()
-    print(f"✅ Discovered {len(skills)} Claude Skills")
+    print(f"✅ Discovered {len(skills)} Skills")
 
     # Create only the get_skill tool (Progressive Disclosure Level 2)
     tools = [

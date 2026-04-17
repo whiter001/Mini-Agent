@@ -32,11 +32,12 @@ from pydantic import field_validator
 from acp.schema import AgentCapabilities, Implementation, McpCapabilities
 
 from mini_agent.agent import Agent
-from mini_agent.cli import add_workspace_tools, initialize_base_tools
+from mini_agent.cli import add_workspace_tools, build_turn_context, initialize_base_tools, _maybe_persist_auto_skill
 from mini_agent.config import Config
 from mini_agent.llm import LLMClient
 from mini_agent.retry import RetryConfig as RetryConfigBase
 from mini_agent.schema import Message
+from mini_agent.tools.skill_loader import SkillLoader
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +77,19 @@ class MiniMaxACPAgent:
         config: Config,
         llm: LLMClient,
         base_tools: list,
-        system_prompt: str,
+        skill_loader: SkillLoader | str | None = None,
+        memory_store: Any | None = None,
+        system_prompt: str = "",
     ):
+        if isinstance(skill_loader, str) and not system_prompt:
+            system_prompt = skill_loader
+            skill_loader = None
         self._conn = conn
         self._config = config
         self._llm = llm
         self._base_tools = base_tools
+        self._skill_loader = skill_loader
+        self._memory_store = memory_store
         self._system_prompt = system_prompt
         self._sessions: dict[str, SessionState] = {}
 
@@ -108,41 +116,50 @@ class MiniMaxACPAgent:
         if not state:
             # Auto-create session if not found (compatibility with clients that skip newSession)
             logger.warning(f"Session '{params.sessionId}' not found, auto-creating new session")
-            new_session = await self.newSession(NewSessionRequest(cwd=None))
+            new_session = await self.newSession(NewSessionRequest.model_construct(cwd=None))
             state = self._sessions.get(new_session.sessionId)
             if not state:
                 logger.error("Failed to auto-create session")
                 return PromptResponse(stopReason="refusal")
         state.cancelled = False
         user_text = "\n".join(block.get("text", "") if isinstance(block, dict) else getattr(block, "text", "") for block in params.prompt)
+        turn_start_index = len(state.agent.messages)
         state.agent.messages.append(Message(role="user", content=user_text))
-        stop_reason = await self._run_turn(state, params.sessionId)
-        return PromptResponse(stopReason=stop_reason)
+        state.agent.set_ephemeral_context(
+            build_turn_context(self._memory_store, self._skill_loader, user_text, self._config.tools.auto_skills_limit)
+        )
+        try:
+            stop_reason, final_result = await self._run_turn(state, params.sessionId)
+            _maybe_persist_auto_skill(self._config, self._skill_loader, state.agent, turn_start_index, final_result)
+            return PromptResponse(stopReason=stop_reason)
+        finally:
+            state.agent.clear_ephemeral_context()
 
     async def cancel(self, params: CancelNotification) -> None:
         state = self._sessions.get(params.sessionId)
         if state:
             state.cancelled = True
 
-    async def _run_turn(self, state: SessionState, session_id: str) -> str:
+    async def _run_turn(self, state: SessionState, session_id: str) -> tuple[str, str]:
         agent = state.agent
         for _ in range(agent.max_steps):
             if state.cancelled:
-                return "cancelled"
+                return "cancelled", "Task cancelled by user."
             tool_schemas = [tool.to_schema() for tool in agent.tools.values()]
+            active_messages = agent._get_active_messages()
             try:
-                response = await agent.llm.generate(messages=agent.messages, tools=tool_schemas)
+                response = await agent.llm.generate(messages=active_messages, tools=tool_schemas)
             except Exception as exc:
                 logger.exception("LLM error")
                 await self._send(session_id, update_agent_message(text_block(f"Error: {exc}")))
-                return "refusal"
+                return "refusal", f"LLM call failed: {exc}"
             if response.thinking:
                 await self._send(session_id, update_agent_thought(text_block(response.thinking)))
             if response.content:
                 await self._send(session_id, update_agent_message(text_block(response.content)))
             agent.messages.append(Message(role="assistant", content=response.content, thinking=response.thinking, tool_calls=response.tool_calls))
             if not response.tool_calls:
-                return "end_turn"
+                return "end_turn", response.content
             for call in response.tool_calls:
                 name, args = call.function.name, call.function.arguments
                 # Show tool name with key arguments for better visibility
@@ -162,7 +179,7 @@ class MiniMaxACPAgent:
                         status, text = "failed", f"[ERROR] Tool error: {exc}"
                 await self._send(session_id, update_tool_call(call.id, status=status, content=[tool_content(text_block(text))], raw_output=text))
                 agent.messages.append(Message(role="tool", content=text, tool_call_id=call.id, name=name))
-        return "max_turn_requests"
+        return "max_turn_requests", f"Task couldn't be completed after {agent.max_steps} steps."
 
     async def _send(self, session_id: str, update: Any) -> None:
         await self._conn.sessionUpdate(session_notification(session_id, update))
@@ -172,7 +189,7 @@ async def run_acp_server(config: Config | None = None) -> None:
     """Run Mini-Agent as an ACP-compatible stdio server."""
     config = config or Config.load()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    base_tools, skill_loader = await initialize_base_tools(config)
+    base_tools, skill_loader, memory_store = await initialize_base_tools(config)
     prompt_path = Config.find_config_file(config.agent.system_prompt_path)
     if prompt_path and prompt_path.exists():
         system_prompt = prompt_path.read_text(encoding="utf-8")
@@ -182,10 +199,18 @@ async def run_acp_server(config: Config | None = None) -> None:
         meta = skill_loader.get_skills_metadata_prompt()
         if meta:
             system_prompt = f"{system_prompt.rstrip()}\n\n{meta}"
+    if memory_store:
+        memory_prompt = memory_store.build_system_prompt()
+        if memory_prompt:
+            system_prompt = f"{system_prompt.rstrip()}\n\n{memory_prompt}"
     rcfg = config.llm.retry
     llm = LLMClient(api_key=config.llm.api_key, api_base=config.llm.api_base, model=config.llm.model, retry_config=RetryConfigBase(enabled=rcfg.enabled, max_retries=rcfg.max_retries, initial_delay=rcfg.initial_delay, max_delay=rcfg.max_delay, exponential_base=rcfg.exponential_base))
     reader, writer = await stdio_streams()
-    AgentSideConnection(lambda conn: MiniMaxACPAgent(conn, config, llm, base_tools, system_prompt), writer, reader)
+    AgentSideConnection(
+        lambda conn: MiniMaxACPAgent(conn, config, llm, base_tools, skill_loader, memory_store, system_prompt),
+        writer,
+        reader,
+    )
     logger.info("Mini-Agent ACP server running")
     await asyncio.Event().wait()
 
