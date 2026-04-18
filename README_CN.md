@@ -2,20 +2,20 @@
 
 [English](./README.md) | 中文
 
-**Mini Agent** 是一个极简但专业的演示项目，旨在展示使用 MiniMax M2.5 模型构建 Agent 的最佳实践。项目通过兼容 Anthropic 的 API，完全支持交错思维（interleaved thinking），从而解锁 M2 模型在处理长而复杂的任务时强大的推理能力。
+**Mini Agent** 是一个极简但专业的演示项目，旨在展示使用 MiniMax M2.7 模型构建 Agent 的最佳实践。项目通过兼容 Anthropic 的 API，完全支持交错思维（interleaved thinking），从而解锁 M2 模型在处理长而复杂的任务时强大的推理能力。
 
 该项目具备一系列为稳健、智能的 Agent 开发而设计的特性：
 
-*   ✅ **完整的 Agent 执行循环**：一个完整可靠的执行框架，配备了文件系统和 Shell 操作的基础工具集。
-*   ✅ **持久化记忆**：通过内置的 **Session Note Tool**，Agent 能够在多个会话中保留关键信息。
-*   ✅ **智能上下文管理**：自动对会话历史进行摘要，可处理长达可配置 Token 上限的上下文，从而支持无限长的任务。
-*   ✅ **集成 Claude Skills**：内置 15 种专业技能，涵盖文档处理、设计、测试和开发等领域。
-*   ✅ **自动技能加载**：会根据当前请求自动选择并注入相关技能，参考 Hermes Agent 的做法。
-*   ✅ **自动技能创建**：可将可复用的工作流持久化到 `~/.mini-agent/skills/`，供后续任务自动复用。
-*   ✅ **持久化记忆**：在 `~/.mini-agent/` 下保存可搜索的长期记忆与用户画像。
-*   ✅ **集成 MCP 工具**：原生支持 MCP 协议，可轻松接入知识图谱、网页搜索等工具。
-*   ✅ **全面的日志记录**：为每个请求、响应和工具执行提供详细日志，便于调试。
-*   ✅ **简洁明了的设计**：美观的命令行界面和易于理解的代码库，使其成为构建高级 Agent 的理想起点。
+- ✅ **完整的 Agent 执行循环**：一个完整可靠的执行框架，配备了文件系统和 Shell 操作的基础工具集。
+- ✅ **持久化记忆**：通过内置的 **Session Note Tool**，Agent 能够在多个会话中保留关键信息。
+- ✅ **智能上下文管理**：自动对会话历史进行摘要，可处理长达可配置 Token 上限的上下文，从而支持无限长的任务。
+- ✅ **集成 Claude Skills**：内置 15 种专业技能，涵盖文档处理、设计、测试和开发等领域。
+- ✅ **自动技能加载**：会根据当前请求自动选择并注入相关技能，参考 Hermes Agent 的做法。
+- ✅ **自动技能创建**：可将可复用的工作流持久化到 `~/.mini-agent/skills/`，供后续任务自动复用。
+- ✅ **持久化记忆**：在 `~/.mini-agent/` 下保存可搜索的长期记忆与用户画像。
+- ✅ **集成 MCP 工具**：原生支持 MCP 协议，可轻松接入知识图谱、网页搜索等工具。
+- ✅ **全面的日志记录**：为每个请求、响应和工具执行提供详细日志，便于调试。
+- ✅ **简洁明了的设计**：美观的命令行界面和易于理解的代码库，使其成为构建高级 Agent 的理想起点。
 
 ## 目录
 
@@ -55,6 +55,7 @@ MiniMax 提供国内和海外两个平台，请根据您的网络环境选择：
 | **海外版** | [https://platform.minimax.io](https://platform.minimax.io)     | `https://api.minimax.io`   |
 
 **获取步骤：**
+
 1. 访问相应平台注册并登录
 2. 进入 **账户管理 > API 密钥**
 3. 点击 **"创建新密钥"**
@@ -64,7 +65,7 @@ MiniMax 提供国内和海外两个平台，请根据您的网络环境选择：
 
 ### 2. 选择使用模式
 
-**前置要求：安装 uv**
+#### 前置要求：安装 uv
 
 两种使用模式都需要 uv。如果您尚未安装：
 
@@ -114,10 +115,10 @@ nano ~/.mini-agent/config/config.yaml
 填入您的 API Key 和对应的 API Base：
 
 ```yaml
-api_key: "YOUR_API_KEY_HERE"          # 填入第 1 步获取的 API Key
-api_base: "https://api.minimaxi.com"  # 国内版
+api_key: "YOUR_API_KEY_HERE" # 填入第 1 步获取的 API Key
+api_base: "https://api.minimaxi.com" # 国内版
 # api_base: "https://api.minimax.io"  # 海外版（如使用海外平台，请取消本行注释）
-model: "MiniMax-M2.5"
+model: "MiniMax-M2.7"
 ```
 
 自动生成的 skills 默认存放在 `~/.mini-agent/skills/`，并会与内置 skills 一起扫描加载。
@@ -163,11 +164,13 @@ git submodule update --init --recursive
 ```
 
 **macOS/Linux:**
+
 ```bash
 cp mini_agent/config/config-example.yaml mini_agent/config/config.yaml
 ```
 
 **Windows:**
+
 ```powershell
 Copy-Item mini_agent\config\config-example.yaml mini_agent\config\config.yaml
 
@@ -178,10 +181,10 @@ vim mini_agent/config/config.yaml  # 或使用您偏好的编辑器
 填入您的 API Key 和对应的 API Base：
 
 ```yaml
-api_key: "YOUR_API_KEY_HERE"          # 填入第 1 步获取的 API Key
-api_base: "https://api.minimaxi.com"  # 国内版
+api_key: "YOUR_API_KEY_HERE" # 填入第 1 步获取的 API Key
+api_base: "https://api.minimaxi.com" # 国内版
 # api_base: "https://api.minimax.io"  # 海外版（如使用海外平台，请修改此行）
-model: "MiniMax-M2.5"
+model: "MiniMax-M2.7"
 max_steps: 100
 workspace_dir: "./workspace"
 ```
@@ -204,7 +207,6 @@ mini-agent --workspace /path/to/your/project
 ```
 
 > 📖 更多开发指引，请参阅 [开发指南](docs/DEVELOPMENT_GUIDE_CN.md)
-
 > 📖 更多生产部署指引，请参阅 [生产指南](docs/PRODUCTION_GUIDE_CN.md)
 
 ## ACP & Zed Editor 集成（可选）
@@ -227,10 +229,12 @@ Mini Agent 支持 [Agent Communication Protocol (ACP)](https://github.com/modelc
 ```
 
 命令路径应为：
+
 - 通过 `uv tool install` 安装：使用 `which mini-agent-acp` 的输出结果
 - 开发模式：`./mini_agent/acp/server.py`
 
 **使用方法：**
+
 - 使用 `Ctrl+Shift+P` → "Agent: Toggle Panel" 打开 Zed 的 Agent 面板
 - 从 Agent 下拉列表中选择 "mini-agent"
 - 直接在编辑器中开始与 Mini Agent 对话
@@ -241,22 +245,21 @@ Mini Agent 支持 [Agent Communication Protocol (ACP)](https://github.com/modelc
 
 ### 任务执行
 
-*在这个演示中，我们要求 Agent 创建一个简洁美观的网页并在浏览器中显示它，以此展示基础的工具使用循环。*
+_在这个演示中，我们要求 Agent 创建一个简洁美观的网页并在浏览器中显示它，以此展示基础的工具使用循环。_
 
 ![演示动图 1: 基础任务执行](docs/assets/demo1-task-execution.gif "基础任务执行演示")
 
 ### 使用 Claude Skill（例如：PDF 生成）
 
-*这里，Agent 利用 Claude Skill 根据用户请求创建专业文档（如 PDF 或 DOCX），展示了其强大的高级能力。*
+_这里，Agent 利用 Claude Skill 根据用户请求创建专业文档（如 PDF 或 DOCX），展示了其强大的高级能力。_
 
 ![演示动图 2: Claude Skill 使用](docs/assets/demo2-claude-skill.gif "Claude Skill 使用演示")
 
 ### 网页搜索与摘要（MCP 工具）
 
-*此演示展示了 Agent 如何使用其网页搜索工具在线查找最新信息，并为用户进行总结。*
+_此演示展示了 Agent 如何使用其网页搜索工具在线查找最新信息，并为用户进行总结。_
 
 ![演示动图 3: 网页搜索](docs/assets/demo3-web-search.gif "网页搜索演示")
-
 
 ## 测试
 
@@ -279,7 +282,6 @@ pytest tests/test_agent.py tests/test_note_tool.py -v
 - ✅ **集成测试** - Agent 端到端执行
 - ✅ **外部服务** - Git MCP 服务器加载
 
-
 ## 常见问题
 
 ### SSL 证书错误
@@ -287,12 +289,14 @@ pytest tests/test_agent.py tests/test_note_tool.py -v
 如果遇到 `[SSL: CERTIFICATE_VERIFY_FAILED]` 错误:
 
 **测试环境快速修复** (修改 `mini_agent/llm.py`):
+
 ```python
 # 第 50 行: 给 AsyncClient 添加 verify=False
 async with httpx.AsyncClient(timeout=120.0, verify=False) as client:
 ```
 
 **生产环境解决方案**:
+
 ```bash
 # 更新证书
 uv sync --upgrade-package certifi
@@ -303,6 +307,7 @@ uv sync --upgrade-package certifi
 ### 模块未找到错误
 
 确保从项目目录运行:
+
 ```bash
 cd Mini-Agent
 python -m mini_agent.cli
@@ -332,11 +337,11 @@ python -m mini_agent.cli
 
 ## 参考资源
 
-- MiniMax API: https://platform.minimaxi.com/docs
-- MiniMax-M2: https://github.com/MiniMax-AI/MiniMax-M2
-- Anthropic API: https://docs.anthropic.com/claude/reference
-- Claude Skills: https://github.com/anthropics/skills
-- MCP Servers: https://github.com/modelcontextprotocol/servers
+- [MiniMax API](https://platform.minimaxi.com/docs)
+- [MiniMax-M2](https://github.com/MiniMax-AI/MiniMax-M2)
+- [Anthropic API](https://docs.anthropic.com/claude/reference)
+- [Claude Skills](https://github.com/anthropics/skills)
+- [MCP Servers](https://github.com/modelcontextprotocol/servers)
 
 ---
 

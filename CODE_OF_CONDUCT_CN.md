@@ -45,4 +45,3 @@
 社区影响指南受到 [Mozilla 的行为准则执行阶梯](https://github.com/mozilla/diversity)的启发。
 
 有关本行为准则的常见问题的答案，请参阅 https://www.contributor-covenant.org/faq。翻译版本可在 https://www.contributor-covenant.org/translations 获取。
-

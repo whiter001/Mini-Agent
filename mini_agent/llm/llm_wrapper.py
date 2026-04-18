@@ -38,7 +38,7 @@ class LLMClient:
         api_key: str,
         provider: LLMProvider = LLMProvider.ANTHROPIC,
         api_base: str = "https://api.minimaxi.com",
-        model: str = "MiniMax-M2.5",
+        model: str = "MiniMax-M2.7",
         retry_config: RetryConfig | None = None,
     ):
         """Initialize LLM client with specified provider.

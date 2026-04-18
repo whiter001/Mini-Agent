@@ -1,6 +1,5 @@
 # 开发指南
 
-
 ## 目录
 
 - [开发指南](#开发指南)
@@ -77,6 +76,7 @@ mini-agent/
 **配置**：无需 API Key，开箱即用
 
 **能力**：
+
 - 跨会话存储并检索信息
 - 根据对话内容构建知识图谱
 - 对已存储的记忆进行语义搜索
@@ -86,6 +86,7 @@ mini-agent/
 #### MiniMax Search - 网页搜索与浏览
 
 **功能**：提供三大强大工具：
+
 - `search` - 网页搜索
 - `parallel_search` - 并行执行多个搜索任务
 - `browse` - 智能网页浏览与内容提取
@@ -132,12 +133,12 @@ class MyTool(Tool):
     def name(self) -> str:
         """工具的唯一名称，需保持独一无二。"""
         return "my_tool"
-    
+
     @property
     def description(self) -> str:
         """工具用途的详细描述，帮助 LLM 理解其功能。"""
         return "我的自定义工具，用于完成特定任务"
-    
+
     @property
     def parameters(self) -> Dict[str, Any]:
         """参数模式（JSON Schema 格式）。"""
@@ -156,22 +157,22 @@ class MyTool(Tool):
             },
             "required": ["param1"]
         }
-    
+
     async def execute(self, param1: str, param2: int = 10) -> ToolResult:
         """
         工具执行的核心逻辑。
-        
+
         Args:
             param1: 参数一。
             param2: 参数二，包含默认值。
-        
+
         Returns:
             返回一个 ToolResult 对象。
         """
         try:
             # 在此实现你的逻辑
             result = f"处理了 {param1}，param2={param2}"
-            
+
             return ToolResult(
                 success=True,
                 content=result
@@ -233,7 +234,7 @@ agent = Agent(
 class SessionNoteTool:
     def __init__(self, memory_file: str = "./workspace/.agent_memory.json"):
         self.memory_file = Path(memory_file)
-    
+
     async def _save_notes(self, notes: List[Dict]):
         with open(self.memory_file, 'w') as f:
             json.dump(notes, f, indent=2, ensure_ascii=False)
@@ -242,7 +243,7 @@ class SessionNoteTool:
 class PostgresNoteTool(Tool):
     def __init__(self, db_url: str):
         self.db = PostgresDB(db_url)
-    
+
     async def _save_notes(self, notes: List[Dict]):
         await self.db.execute(
             "INSERT INTO notes (content, category, timestamp) VALUES ($1, $2, $3)",
@@ -253,11 +254,11 @@ class PostgresNoteTool(Tool):
 class MilvusNoteTool(Tool):
     def __init__(self, milvus_host: str):
         self.vector_db = MilvusClient(host=milvus_host)
-    
+
     async def _save_notes(self, notes: List[Dict]):
         # 生成内容的嵌入向量
         embeddings = await self.get_embeddings([n["content"] for n in notes])
-        
+
         # 将笔记和向量存入向量数据库
         await self.vector_db.insert(
             collection="agent_notes",
@@ -417,4 +418,3 @@ logger.debug(f"工具调用: {tool_call.name}")
 logger.debug(f"工具参数: {tool_call.arguments}")
 logger.debug(f"工具结果: {result.content[:200]}")
 ```
-

@@ -76,6 +76,7 @@ This project comes with pre-configured MCP (Model Context Protocol) tools that e
 **Configuration**: No API Key required, works out of the box
 
 **Capabilities**:
+
 - Store and retrieve information across sessions
 - Build knowledge graphs from conversations
 - Semantic search through stored memories
@@ -85,6 +86,7 @@ This project comes with pre-configured MCP (Model Context Protocol) tools that e
 #### MiniMax Search - Web Search and Browse
 
 **Function**: Provides three powerful tools:
+
 - `search` - Web search capability
 - `parallel_search` - Execute multiple searches simultaneously
 - `browse` - Intelligent web browsing and content extraction
@@ -131,12 +133,12 @@ class MyTool(Tool):
     def name(self) -> str:
         """A unique name for the tool."""
         return "my_tool"
-    
+
     @property
     def description(self) -> str:
         """A description for the LLM to understand the tool's purpose."""
         return "My custom tool for doing something useful"
-    
+
     @property
     def parameters(self) -> Dict[str, Any]:
         """Parameter schema in JSON Schema format."""
@@ -155,22 +157,22 @@ class MyTool(Tool):
             },
             "required": ["param1"]
         }
-    
+
     async def execute(self, param1: str, param2: int = 10) -> ToolResult:
         """
         The main logic of the tool.
-        
+
         Args:
             param1: The first parameter.
             param2: The second parameter, with a default value.
-        
+
         Returns:
             A ToolResult object.
         """
         try:
             # Implement your logic here
             result = f"Processed {param1} with param2={param2}"
-            
+
             return ToolResult(
                 success=True,
                 content=result
@@ -232,7 +234,7 @@ To replace the storage backend for the `SessionNoteTool`:
 class SessionNoteTool:
     def __init__(self, memory_file: str = "./workspace/.agent_memory.json"):
         self.memory_file = Path(memory_file)
-    
+
     async def _save_notes(self, notes: List[Dict]):
         with open(self.memory_file, 'w') as f:
             json.dump(notes, f, indent=2, ensure_ascii=False)
@@ -241,7 +243,7 @@ class SessionNoteTool:
 class PostgresNoteTool(Tool):
     def __init__(self, db_url: str):
         self.db = PostgresDB(db_url)
-    
+
     async def _save_notes(self, notes: List[Dict]):
         await self.db.execute(
             "INSERT INTO notes (content, category, timestamp) VALUES ($1, $2, $3)",
@@ -252,11 +254,11 @@ class PostgresNoteTool(Tool):
 class MilvusNoteTool(Tool):
     def __init__(self, milvus_host: str):
         self.vector_db = MilvusClient(host=milvus_host)
-    
+
     async def _save_notes(self, notes: List[Dict]):
         # Generate embeddings
         embeddings = await self.get_embeddings([n["content"] for n in notes])
-        
+
         # Store in the vector database
         await self.vector_db.insert(
             collection="agent_notes",
@@ -265,7 +267,7 @@ class MilvusNoteTool(Tool):
         )
 ```
 
-### 3.4 Initialize Claude Skills (Recommended) 
+### 3.4 Initialize Claude Skills (Recommended)
 
 This project integrates Claude's official skills repository via git submodule. Initialize it after first clone:
 

@@ -31,12 +31,14 @@ If you have an idea for a new feature, please create an Issue first to discuss i
 
 1. Fork this repository.
 2. Clone your fork:
+
    ```bash
    git clone https://github.com/MiniMax-AI/Mini-Agent mini-agent
    cd mini-agent
    ```
 
 3. Create a new branch:
+
    ```bash
    git checkout -b feature/your-feature-name
    # or
@@ -73,7 +75,6 @@ If you have an idea for a new feature, please create an Issue first to discuss i
      # or
      git commit -m "fix(agent): Fix error handling for tool calls"
      ```
-   
    - Commit message format:
      - `feat`: A new feature
      - `fix`: A bug fix
@@ -84,6 +85,7 @@ If you have an idea for a new feature, please create an Issue first to discuss i
      - `chore`: Build or auxiliary tools
 
 5. **Push to Your Fork**
+
    ```bash
    git push origin feature/your-feature-name
    ```
@@ -123,17 +125,17 @@ Follow PEP 8 and the Google Python Style Guide:
 # Good example ✅
 class MyClass:
     """A brief description of the class.
-    
+
     A more detailed description...
     """
-    
+
     def my_method(self, param1: str, param2: int = 10) -> str:
         """A brief description of the method.
-        
+
         Args:
             param1: Description of parameter 1.
             param2: Description of parameter 2.
-        
+
         Returns:
             Description of the return value.
         """

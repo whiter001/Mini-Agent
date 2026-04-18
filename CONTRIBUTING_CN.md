@@ -31,12 +31,14 @@
 
 1. Fork 本仓库
 2. 克隆你的 fork：
+
    ```bash
    git clone https://github.com/MiniMax-AI/Mini-Agent mini-agent
    cd mini-agent
    ```
 
 3. 创建新分支：
+
    ```bash
    git checkout -b feature/your-feature-name
    # 或
@@ -73,7 +75,6 @@
      # 或
      git commit -m "fix(agent): 修复工具调用错误处理"
      ```
-   
    - 提交消息格式：
      - `feat`: 新功能
      - `fix`: Bug 修复
@@ -84,6 +85,7 @@
      - `chore`: 构建或辅助工具
 
 5. **推送到你的 fork**
+
    ```bash
    git push origin feature/your-feature-name
    ```
@@ -123,17 +125,17 @@
 # 好的示例 ✅
 class MyClass:
     """类的简短描述。
-    
+
     详细描述...
     """
-    
+
     def my_method(self, param1: str, param2: int = 10) -> str:
         """方法的简短描述。
-        
+
         Args:
             param1: 参数1的描述
             param2: 参数2的描述
-        
+
         Returns:
             返回值的描述
         """
@@ -198,4 +200,3 @@ async def test_my_tool():
 ---
 
 再次感谢你的贡献！ 🎉
-
