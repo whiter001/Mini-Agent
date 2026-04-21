@@ -52,7 +52,7 @@ class Agent:
         tools: list[Tool],
         max_steps: int = 50,
         workspace_dir: str = "./workspace",
-        token_limit: int = 80000,  # Summary triggered when tokens exceed this value
+        token_limit: int = 30000,  # Conservative default for small-context models
     ):
         self.llm = llm_client
         self.tools = {tool.name: tool for tool in tools}

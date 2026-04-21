@@ -20,6 +20,38 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+def _get_exception_status_code(exception: Exception) -> int | None:
+    status_code = getattr(exception, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+
+    response = getattr(exception, "response", None)
+    if response is not None:
+        response_status_code = getattr(response, "status_code", None)
+        if isinstance(response_status_code, int):
+            return response_status_code
+
+    return None
+
+
+def _is_non_retryable_exception(exception: Exception) -> bool:
+    status_code = _get_exception_status_code(exception)
+    if status_code is not None and 400 <= status_code < 500 and status_code not in (408, 429):
+        return True
+
+    message = f"{type(exception).__name__}: {exception}".lower()
+    return any(
+        phrase in message
+        for phrase in (
+            "invalid_request_error",
+            "context window exceeds limit",
+            "maximum context length",
+            "prompt too long",
+            "input is too long",
+        )
+    )
+
+
 class RetryConfig:
     """Retry configuration class"""
 
@@ -104,7 +136,13 @@ def async_retry(
                     # Try to execute function
                     return await func(*args, **kwargs)
 
-                except config.retryable_exceptions as e:
+                except Exception as e:
+                    if not isinstance(e, config.retryable_exceptions) or _is_non_retryable_exception(e):
+                        logger.error(
+                            f"Function {func.__name__} failed with non-retryable error: {str(e)}"
+                        )
+                        raise
+
                     last_exception = e
 
                     # If this is the last attempt, don't retry

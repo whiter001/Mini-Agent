@@ -24,10 +24,19 @@ class Skill:
     metadata: Optional[Dict[str, Any]] = None
     skill_path: Optional[Path] = None
 
-    def to_prompt(self) -> str:
-        """Convert skill to prompt format"""
+    def to_prompt(self, max_content_chars: int | None = None) -> str:
+        """Convert skill to prompt format."""
         # Inject skill root directory path for context
         skill_root = str(self.skill_path.parent) if self.skill_path else "unknown"
+
+        skill_content = self.content
+        truncation_note = ""
+        if max_content_chars is not None and max_content_chars >= 0 and len(skill_content) > max_content_chars:
+            skill_content = skill_content[:max_content_chars].rstrip()
+            truncation_note = (
+                "\n\n... [Skill content truncated to keep the request within the context window. "
+                "Use get_skill for the full version.] ..."
+            )
 
         return f"""
 # Skill: {self.name}
@@ -40,7 +49,7 @@ All files and references in this skill are relative to this directory.
 
 ---
 
-{self.content}
+{skill_content}{truncation_note}
 """
 
 
@@ -307,7 +316,7 @@ class SkillLoader:
         scored_skills.sort(key=lambda item: (-item[0], item[1]))
         return [skill for _, _, skill in scored_skills[:max_skills]]
 
-    def get_auto_skills_prompt(self, query: str, max_skills: int = 2) -> str:
+    def get_auto_skills_prompt(self, query: str, max_skills: int = 2, max_content_chars: int = 1200) -> str:
         """Build a prompt block for the skills selected for this request."""
         selected_skills = self.select_relevant_skills(query, max_skills=max_skills)
         if not selected_skills:
@@ -319,7 +328,7 @@ class SkillLoader:
         ]
 
         for skill in selected_skills:
-            prompt_parts.append(skill.to_prompt().strip())
+            prompt_parts.append(skill.to_prompt(max_content_chars=max_content_chars).strip())
 
         return "\n\n".join(prompt_parts)
 

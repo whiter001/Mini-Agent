@@ -238,6 +238,28 @@ def test_auto_skill_creation_suffixed_when_content_changes():
         assert first.skill_path != second.skill_path
 
 
+def test_auto_skill_prompt_truncates_large_skill_content():
+    """Auto-loaded skills should stay compact to protect the request context window."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        large_dir = Path(tmpdir) / "large"
+        large_dir.mkdir()
+        create_test_skill(
+            large_dir,
+            "large-skill",
+            "Very large skill",
+            "X" * 5000,
+        )
+
+        loader = SkillLoader(tmpdir)
+        loader.discover_skills()
+
+        prompt = loader.get_auto_skills_prompt("need a large skill", max_skills=1)
+
+        assert "large-skill" in prompt
+        assert "use get_skill for the full version" in prompt.lower()
+        assert len(prompt) < 3500
+
+
 @pytest.mark.parametrize("invalid_value", [0, -1])
 def test_tools_config_rejects_non_positive_auto_skill_min_tool_calls(invalid_value):
     """Auto skill creation threshold must stay positive."""
