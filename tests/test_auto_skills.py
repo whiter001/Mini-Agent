@@ -3,7 +3,11 @@
 import tempfile
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from mini_agent.agent import Agent
+from mini_agent.config import ToolsConfig
 from mini_agent.schema import FunctionCall, Message, ToolCall
 from mini_agent.tools.auto_skill import build_auto_skill_context, maybe_create_auto_skill
 from mini_agent.tools.skill_loader import SkillLoader
@@ -232,3 +236,10 @@ def test_auto_skill_creation_suffixed_when_content_changes():
         assert first.skill_path is not None
         assert second.skill_path is not None
         assert first.skill_path != second.skill_path
+
+
+@pytest.mark.parametrize("invalid_value", [0, -1])
+def test_tools_config_rejects_non_positive_auto_skill_min_tool_calls(invalid_value):
+    """Auto skill creation threshold must stay positive."""
+    with pytest.raises(ValidationError):
+        ToolsConfig(auto_skill_min_tool_calls=invalid_value)

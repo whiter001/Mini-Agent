@@ -59,7 +59,7 @@ class ToolsConfig(BaseModel):
     auto_skills_limit: int = 2
     enable_memory: bool = True
     enable_auto_skill_creation: bool = True
-    auto_skill_min_tool_calls: int = 5
+    auto_skill_min_tool_calls: int = Field(default=5, gt=0)
     auto_skill_dir: str = "~/.mini-agent/skills"
     skills_external_dirs: list[str] = Field(default_factory=lambda: ["~/.mini-agent/skills"])
     skills_dir: str = "./skills"
