@@ -50,9 +50,9 @@ class Agent:
         llm_client: LLMClient,
         system_prompt: str,
         tools: list[Tool],
-        max_steps: int = 50,
+        max_steps: int = 100,
         workspace_dir: str = "./workspace",
-        token_limit: int = 30000,  # Conservative default for small-context models
+        token_limit: int = 160000,  # Leave safe headroom below MiniMax-M2.7's 204,800-token context window.
     ):
         self.llm = llm_client
         self.tools = {tool.name: tool for tool in tools}

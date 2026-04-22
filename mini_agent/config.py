@@ -32,7 +32,7 @@ class LLMConfig(BaseModel):
 class AgentConfig(BaseModel):
     """Agent configuration"""
 
-    max_steps: int = 50
+    max_steps: int = 100
     workspace_dir: str = "./workspace"
     system_prompt_path: str = "system_prompt.md"
 
