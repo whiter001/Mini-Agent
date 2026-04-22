@@ -260,6 +260,48 @@ def test_auto_skill_prompt_truncates_large_skill_content():
         assert len(prompt) < 3500
 
 
+def test_auto_skill_creation_handles_multiline_requests():
+    """Generated skill frontmatter should remain parseable for multiline user requests."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        skill_dir = Path(tmpdir) / "skills"
+        loader = SkillLoader(str(skill_dir))
+
+        user_request = "Create a workflow:\n- collect inputs\n- validate: yes"
+        turn_messages = [Message(role="user", content=user_request)]
+        for idx in range(5):
+            turn_messages.append(
+                Message(
+                    role="assistant",
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            id=f"call-{idx}",
+                            type="function",
+                            function=FunctionCall(name="bash", arguments={"command": f"step {idx}"}),
+                        )
+                    ],
+                )
+            )
+            turn_messages.append(Message(role="tool", content=f"done {idx}", tool_call_id=f"call-{idx}", name="bash"))
+
+        result = maybe_create_auto_skill(
+            loader,
+            turn_messages,
+            "Task completed successfully.",
+            auto_skill_dir=str(skill_dir),
+            min_tool_calls=5,
+        )
+
+        assert result.created is True
+        assert result.skill_path is not None
+
+        loaded_skill = loader.load_skill(result.skill_path)
+
+        assert loaded_skill is not None
+        assert "collect inputs" in loaded_skill.content
+        assert "validate: yes" in loaded_skill.content
+
+
 @pytest.mark.parametrize("invalid_value", [0, -1])
 def test_tools_config_rejects_non_positive_auto_skill_min_tool_calls(invalid_value):
     """Auto skill creation threshold must stay positive."""

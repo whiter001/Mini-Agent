@@ -202,6 +202,22 @@ class SkillLoader:
             Processed content with absolute paths
         """
         import re
+        skill_root = skill_dir.resolve(strict=False)
+
+        def resolve_skill_reference(relative_path: str) -> Path | None:
+            # Resolve symlinks before rewriting so references cannot escape the skill root.
+            candidate = (skill_dir / relative_path).expanduser()
+            try:
+                resolved = candidate.resolve(strict=False)
+            except OSError:
+                return None
+
+            try:
+                resolved.relative_to(skill_root)
+            except ValueError:
+                return None
+
+            return resolved if resolved.exists() else None
 
         # Pattern 1: Directory-based paths (scripts/, references/, assets/)
         # See https://agentskills.io/specification#optional-directories
@@ -209,8 +225,8 @@ class SkillLoader:
             prefix = match.group(1)  # e.g., "python " or "`"
             rel_path = match.group(2)  # e.g., "scripts/with_server.py"
 
-            abs_path = skill_dir / rel_path
-            if abs_path.exists():
+            abs_path = resolve_skill_reference(rel_path)
+            if abs_path is not None:
                 return f"{prefix}{abs_path}"
             return match.group(0)
 
@@ -224,8 +240,8 @@ class SkillLoader:
             filename = match.group(2)  # e.g., "reference.md"
             suffix = match.group(3)  # e.g., punctuation
 
-            abs_path = skill_dir / filename
-            if abs_path.exists():
+            abs_path = resolve_skill_reference(filename)
+            if abs_path is not None:
                 # Add helpful instruction for Agent
                 return f"{prefix}`{abs_path}` (use read_file to access){suffix}"
             return match.group(0)
@@ -247,8 +263,8 @@ class SkillLoader:
             # Remove leading ./ if present
             clean_path = filepath[2:] if filepath.startswith("./") else filepath
 
-            abs_path = skill_dir / clean_path
-            if abs_path.exists():
+            abs_path = resolve_skill_reference(clean_path)
+            if abs_path is not None:
                 # Preserve the link text style (with or without backticks)
                 return f"{prefix}[{link_text}](`{abs_path}`) (use read_file to access)"
             return match.group(0)

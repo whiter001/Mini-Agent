@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Sequence
 
+import yaml
+
 from mini_agent.schema import Message
 
 from .skill_loader import SkillLoader
@@ -190,15 +192,20 @@ def _build_skill_markdown(
         for index, step in enumerate(trace)
     )
     tools_summary = ", ".join(tool_names) if tool_names else "workflow tools"
+    frontmatter = {
+        "name": skill_name,
+        "description": f"Auto-generated workflow for {user_request[:120]}",
+        "version": "1.0",
+        "metadata": {
+            "source": "mini-agent",
+            "trigger": trigger,
+            "generated_at": generated_at,
+            "tools": tools_summary,
+        },
+    }
+    frontmatter_yaml = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True).strip()
     return f"""---
-name: {skill_name}
-description: Auto-generated workflow for {user_request[:120]}
-version: "1.0"
-metadata:
-  source: mini-agent
-  trigger: {trigger}
-  generated_at: {generated_at}
-  tools: {tools_summary}
+{frontmatter_yaml}
 ---
 
 # {skill_name}

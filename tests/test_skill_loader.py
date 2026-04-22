@@ -246,6 +246,61 @@ Run the script: python scripts/test_script.py
         assert str(skill_dir / "scripts" / "test_script.py") in skill.content
 
 
+def test_skill_path_processing_rejects_directory_traversal():
+    """Skill references that escape the skill root should not be rewritten."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        skill_dir = Path(tmpdir) / "test-skill"
+        skill_dir.mkdir()
+
+        outside_file = Path(tmpdir) / "escape.md"
+        outside_file.write_text("Escape content", encoding="utf-8")
+
+        skill_content = f"""---
+name: test-skill
+description: Test skill with traversal
+---
+
+See [escape](../{outside_file.name}) for more information.
+"""
+        (skill_dir / "SKILL.md").write_text(skill_content, encoding="utf-8")
+
+        loader = SkillLoader(tmpdir)
+        skill = loader.load_skill(skill_dir / "SKILL.md")
+
+        assert skill is not None
+        assert f"../{outside_file.name}" in skill.content
+        assert str(outside_file) not in skill.content
+
+
+def test_skill_path_processing_rejects_symlink_escape():
+    """Symlinks that point outside the skill root should not be rewritten."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        skill_dir = Path(tmpdir) / "test-skill"
+        skill_dir.mkdir()
+
+        outside_file = Path(tmpdir) / "escape.md"
+        outside_file.write_text("Escape content", encoding="utf-8")
+
+        linked_file = skill_dir / "linked.md"
+        linked_file.symlink_to(outside_file)
+
+        skill_content = """---
+name: test-skill
+description: Test skill with symlink escape
+---
+
+See [escape](linked.md) for more information.
+"""
+        (skill_dir / "SKILL.md").write_text(skill_content, encoding="utf-8")
+
+        loader = SkillLoader(tmpdir)
+        skill = loader.load_skill(skill_dir / "SKILL.md")
+
+        assert skill is not None
+        assert "linked.md" in skill.content
+        assert str(outside_file) not in skill.content
+
+
 def test_skill_to_prompt_includes_root_directory():
     """Test that to_prompt includes skill root directory path"""
     with tempfile.TemporaryDirectory() as tmpdir:
