@@ -63,6 +63,8 @@ mini-agent/
 | `/history`             | 显示当前会话的消息数量                           |
 | `/stats`               | 显示会话统计信息（步数、工具调用、使用的 Token） |
 
+可在终端执行 `mini-agent help` 查看 CLI 命令总览，执行 `mini-agent help log` 查看 log 命令的详细帮助。
+
 ### 2.2 已集成的 MCP 工具
 
 本项目预先集成了以下 MCP (模型上下文协议) 工具，用以扩展 Agent 的能力：

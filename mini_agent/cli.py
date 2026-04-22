@@ -2,12 +2,12 @@
 Mini Agent - Interactive Runtime Example
 
 Usage:
-    mini-agent [--workspace DIR] [--task TASK]
+    mini-agent [--workspace DIR] [-p TEXT | --prompt TEXT]
 
 Examples:
     mini-agent                              # Use current directory as workspace (interactive mode)
     mini-agent --workspace /path/to/dir     # Use specific workspace directory (interactive mode)
-    mini-agent --task "create a file"       # Execute a task non-interactively
+    mini-agent -p "create a file"           # Execute a prompt non-interactively
 """
 
 import argparse
@@ -191,36 +191,70 @@ def print_banner():
     print()
 
 
-def print_help():
-    """Print help information"""
-    help_text = f"""
-{Colors.BOLD}{Colors.BRIGHT_YELLOW}Available Commands:{Colors.RESET}
-  {Colors.BRIGHT_GREEN}/help{Colors.RESET}      - Show this help message
-  {Colors.BRIGHT_GREEN}/clear{Colors.RESET}     - Clear session history (keep system prompt)
-  {Colors.BRIGHT_GREEN}/history{Colors.RESET}   - Show current session message count
-  {Colors.BRIGHT_GREEN}/stats{Colors.RESET}     - Show session statistics
-  {Colors.BRIGHT_GREEN}/log{Colors.RESET}       - Show log directory and recent files
-  {Colors.BRIGHT_GREEN}/log <file>{Colors.RESET} - Read a specific log file
-  {Colors.BRIGHT_GREEN}/exit{Colors.RESET}      - Exit program (also: exit, quit, q)
+def print_help(topic: str | None = None):
+        """Print help information.
+
+        Args:
+                topic: Optional help topic such as "log".
+        """
+        topic_normalized = topic.lower().strip() if isinstance(topic, str) and topic.strip() else None
+
+        if topic_normalized == "log":
+                help_text = f"""
+{Colors.BOLD}{Colors.BRIGHT_YELLOW}Log Command:{Colors.RESET}
+    {Colors.BRIGHT_GREEN}mini-agent log{Colors.RESET}           Show log directory and recent files
+    {Colors.BRIGHT_GREEN}mini-agent log <file>{Colors.RESET}     Read a specific log file
+    {Colors.BRIGHT_GREEN}mini-agent help log{Colors.RESET}      Show log command help
+
+{Colors.BOLD}{Colors.BRIGHT_YELLOW}Log File Tips:{Colors.RESET}
+    - Use {Colors.BRIGHT_GREEN}mini-agent log{Colors.RESET} to browse recent logs
+    - Use {Colors.BRIGHT_GREEN}mini-agent log <file>{Colors.RESET} to inspect a specific log file
+"""
+                print(help_text)
+                return
+
+        if topic_normalized and topic_normalized not in {"general", "cli", "commands", "interactive"}:
+                print(f"{Colors.YELLOW}Unknown help topic: {topic}{Colors.RESET}")
+                print(f"{Colors.DIM}Showing the main help instead. Available topic: log{Colors.RESET}\n")
+
+        help_text = f"""
+{Colors.BOLD}{Colors.BRIGHT_YELLOW}Mini-Agent CLI:{Colors.RESET}
+    {Colors.BRIGHT_GREEN}mini-agent{Colors.RESET}                   Start interactive mode
+    {Colors.BRIGHT_GREEN}mini-agent -p \"<text>\"{Colors.RESET}     Run a prompt non-interactively and exit
+    {Colors.BRIGHT_GREEN}mini-agent --workspace DIR{Colors.RESET} Use a specific workspace directory
+    {Colors.BRIGHT_GREEN}mini-agent log [file]{Colors.RESET}      Show logs or read a specific log file
+    {Colors.BRIGHT_GREEN}mini-agent help [topic]{Colors.RESET}    Show this help or a topic-specific help
+    {Colors.BRIGHT_GREEN}mini-agent help log{Colors.RESET}      Show log command help
+    {Colors.BRIGHT_GREEN}mini-agent --version{Colors.RESET}       Show version information
+
+{Colors.BOLD}{Colors.BRIGHT_YELLOW}Interactive Commands:{Colors.RESET}
+    {Colors.BRIGHT_GREEN}/help{Colors.RESET}      - Show this help message
+    {Colors.BRIGHT_GREEN}/clear{Colors.RESET}     - Clear session history (keep system prompt)
+    {Colors.BRIGHT_GREEN}/history{Colors.RESET}   - Show current session message count
+    {Colors.BRIGHT_GREEN}/stats{Colors.RESET}     - Show session statistics
+    {Colors.BRIGHT_GREEN}/log{Colors.RESET}       - Show log directory and recent files
+    {Colors.BRIGHT_GREEN}/log <file>{Colors.RESET} - Read a specific log file
+    {Colors.BRIGHT_GREEN}/exit{Colors.RESET}      - Exit program (also: exit, quit, q)
 
 {Colors.BOLD}{Colors.BRIGHT_YELLOW}Keyboard Shortcuts:{Colors.RESET}
-  {Colors.BRIGHT_CYAN}Esc{Colors.RESET}        - Cancel current agent execution
-  {Colors.BRIGHT_CYAN}Ctrl+C{Colors.RESET}     - Exit program
-  {Colors.BRIGHT_CYAN}Ctrl+U{Colors.RESET}     - Clear current input line
-  {Colors.BRIGHT_CYAN}Ctrl+L{Colors.RESET}     - Clear screen
-  {Colors.BRIGHT_CYAN}Ctrl+J{Colors.RESET}     - Insert newline (also Ctrl+Enter)
-  {Colors.BRIGHT_CYAN}Tab{Colors.RESET}        - Auto-complete commands
-  {Colors.BRIGHT_CYAN}↑/↓{Colors.RESET}        - Browse command history
-  {Colors.BRIGHT_CYAN}→{Colors.RESET}          - Accept auto-suggestion
+    {Colors.BRIGHT_CYAN}Esc{Colors.RESET}        - Cancel current agent execution
+    {Colors.BRIGHT_CYAN}Ctrl+C{Colors.RESET}     - Exit program
+    {Colors.BRIGHT_CYAN}Ctrl+U{Colors.RESET}     - Clear current input line
+    {Colors.BRIGHT_CYAN}Ctrl+L{Colors.RESET}     - Clear screen
+    {Colors.BRIGHT_CYAN}Ctrl+J{Colors.RESET}     - Insert newline (also Ctrl+Enter)
+    {Colors.BRIGHT_CYAN}Tab{Colors.RESET}        - Auto-complete commands
+    {Colors.BRIGHT_CYAN}↑/↓{Colors.RESET}        - Browse command history
+    {Colors.BRIGHT_CYAN}→{Colors.RESET}          - Accept auto-suggestion
 
 {Colors.BOLD}{Colors.BRIGHT_YELLOW}Usage:{Colors.RESET}
-  - Enter your task directly, Agent will help you complete it
-  - Agent remembers all conversation content in this session
-  - Use {Colors.BRIGHT_GREEN}/clear{Colors.RESET} to start a new session
-  - Press {Colors.BRIGHT_CYAN}Enter{Colors.RESET} to submit your message
-  - Use {Colors.BRIGHT_CYAN}Ctrl+J{Colors.RESET} to insert line breaks within your message
+    - Enter your task directly, Agent will help you complete it
+    - Agent remembers all conversation content in this session
+    - Use {Colors.BRIGHT_GREEN}/clear{Colors.RESET} to start a new session
+    - Press {Colors.BRIGHT_CYAN}Enter{Colors.RESET} to submit your message
+    - Use {Colors.BRIGHT_CYAN}Ctrl+J{Colors.RESET} to insert line breaks within your message
+    - Try {Colors.BRIGHT_GREEN}mini-agent -p \"列出当前的skills有哪些\"{Colors.RESET} for a one-shot prompt
 """
-    print(help_text)
+        print(help_text)
 
 
 def print_session_info(agent: Agent, workspace_dir: Path, model: str):
@@ -285,19 +319,23 @@ def print_stats(agent: Agent, session_start: datetime):
     print(f"{Colors.DIM}{'─' * 40}{Colors.RESET}\n")
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command line arguments
 
     Returns:
         Parsed arguments
     """
     parser = argparse.ArgumentParser(
+                prog="mini-agent",
         description="Mini Agent - AI assistant with file tools and MCP support",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   mini-agent                              # Use current directory as workspace
   mini-agent --workspace /path/to/dir     # Use specific workspace directory
+    mini-agent -p "列出当前的skills有哪些"     # Execute a prompt non-interactively
+    mini-agent help                         # Show command help
+    mini-agent help log                     # Show log command help
   mini-agent log                          # Show log directory and recent files
   mini-agent log agent_run_xxx.log        # Read a specific log file
         """,
@@ -310,11 +348,19 @@ Examples:
         help="Workspace directory (default: current directory)",
     )
     parser.add_argument(
-        "--task",
-        "-t",
+        "-p",
+        "--prompt",
         type=str,
         default=None,
-        help="Execute a task non-interactively and exit",
+        metavar="TEXT",
+        help="Execute a prompt in non-interactive mode (exits after completion)",
+    )
+    parser.add_argument(
+        "-t",
+        "--task",
+        dest="prompt",
+        type=str,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--version",
@@ -335,7 +381,16 @@ Examples:
         help="Log filename to read (optional, shows directory if omitted)",
     )
 
-    return parser.parse_args()
+    # help subcommand - provides a friendlier CLI entry point than -h/--help
+    help_parser = subparsers.add_parser("help", help="Show command help")
+    help_parser.add_argument(
+        "topic",
+        nargs="?",
+        default=None,
+        help="Optional help topic (for example: log)",
+    )
+
+    return parser.parse_args(argv)
 
 
 async def initialize_base_tools(config: Config):
@@ -382,7 +437,7 @@ async def initialize_base_tools(config: Config):
         try:
             # Resolve skills directory with priority search
             # Expand ~ to user home directory for portability
-            skills_path = Path(config.tools.skills_dir).expanduser()
+            skills_path = Path(str(config.tools.skills_dir).strip()).expanduser()
             if skills_path.is_absolute():
                 skills_dir = str(skills_path)
             else:
@@ -402,11 +457,12 @@ async def initialize_base_tools(config: Config):
                         skills_dir = str(path.resolve())
                         break
 
-            extra_skill_dirs = [str(Path(path).expanduser()) for path in config.tools.skills_external_dirs]
-            skill_tools, skill_loader = create_skill_tools(skills_dir, extra_skill_dirs=extra_skill_dirs)
+            extra_skills_dirs = [str(Path(str(path).strip()).expanduser()) for path in config.tools.skills_external_dirs]
+            skill_tools, skill_loader = create_skill_tools(skills_dir, extra_skills_dirs=extra_skills_dirs)
             if skill_tools:
                 tools.extend(skill_tools)
-                print(f"{Colors.GREEN}✅ Loaded Skill tool (get_skill){Colors.RESET}")
+                loaded_tool_names = ", ".join(tool.name for tool in skill_tools)
+                print(f"{Colors.GREEN}✅ Loaded Skill tools ({loaded_tool_names}){Colors.RESET}")
             else:
                 print(f"{Colors.YELLOW}⚠️  No available Skills found{Colors.RESET}")
         except Exception as e:
@@ -535,12 +591,12 @@ async def _quiet_cleanup():
         pass
 
 
-async def run_agent(workspace_dir: Path, task: str = None):
+async def run_agent(workspace_dir: Path, prompt: str = None):
     """Run Agent in interactive or non-interactive mode.
 
     Args:
         workspace_dir: Workspace directory path
-        task: If provided, execute this task and exit (non-interactive mode)
+        prompt: If provided, execute this prompt and exit (non-interactive mode)
     """
     session_start = datetime.now()
 
@@ -668,16 +724,16 @@ async def run_agent(workspace_dir: Path, task: str = None):
     )
 
     # 8. Display welcome information
-    if not task:
+    if not prompt:
         print_banner()
         print_session_info(agent, workspace_dir, config.llm.model)
 
-    # 8.5 Non-interactive mode: execute task and exit
-    if task:
-        print(f"\n{Colors.BRIGHT_BLUE}Agent{Colors.RESET} {Colors.DIM}›{Colors.RESET} {Colors.DIM}Executing task...{Colors.RESET}\n")
+    # 8.5 Non-interactive mode: execute prompt and exit
+    if prompt:
+        print(f"\n{Colors.BRIGHT_BLUE}Agent{Colors.RESET} {Colors.DIM}›{Colors.RESET} {Colors.DIM}Executing prompt...{Colors.RESET}\n")
         turn_start_index = len(agent.messages)
-        agent.add_user_message(task)
-        agent.set_ephemeral_context(build_turn_context(memory_store, skill_loader, task, config.tools.auto_skills_limit))
+        agent.add_user_message(prompt)
+        agent.set_ephemeral_context(build_turn_context(memory_store, skill_loader, prompt, config.tools.auto_skills_limit))
         try:
             final_result = await agent.run()
             _maybe_persist_auto_skill(config, skill_loader, agent, turn_start_index, final_result)
@@ -912,6 +968,11 @@ def main():
     # Parse command line arguments
     args = parse_args()
 
+    # Handle help subcommand
+    if args.command == "help":
+        print_help(args.topic)
+        return
+
     # Handle log subcommand
     if args.command == "log":
         if args.filename:
@@ -932,7 +993,7 @@ def main():
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
     # Run the agent (config always loaded from package directory)
-    asyncio.run(run_agent(workspace_dir, task=args.task))
+    asyncio.run(run_agent(workspace_dir, prompt=args.prompt))
 
 
 if __name__ == "__main__":

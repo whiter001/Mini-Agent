@@ -122,12 +122,16 @@ model: "MiniMax-M2.7"
 ```
 
 自动生成的 skills 默认存放在 `~/.mini-agent/skills/`，并会与内置 skills 一起扫描加载。
+如果你还想添加更多自定义 skills，可以在 `~/.mini-agent/config/config.yaml` 里配置 `skills_external_dirs`。
 
 **开始使用：**
 
 ```bash
 mini-agent                                    # 使用当前目录作为工作空间
 mini-agent --workspace /path/to/your/project  # 指定工作空间目录
+mini-agent -p "列出当前的skills有哪些"        # 非交互执行一个 prompt 并完成后退出
+mini-agent help                               # 显示 CLI 帮助
+mini-agent help log                           # 显示 log 命令帮助
 mini-agent --version                          # 查看版本信息
 
 # 管理命令
@@ -204,6 +208,7 @@ uv tool install -e .
 # 安装后，您可以在任何路径下运行，且代码更改会立即生效
 mini-agent
 mini-agent --workspace /path/to/your/project
+mini-agent -p "列出当前的skills有哪些"
 ```
 
 > 📖 更多开发指引，请参阅 [开发指南](docs/DEVELOPMENT_GUIDE_CN.md)

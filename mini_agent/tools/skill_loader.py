@@ -66,8 +66,9 @@ class SkillLoader:
             skills_dir: Skills directory path
             extra_skills_dirs: Additional skill directories to scan
         """
-        self.skills_dir = Path(skills_dir)
-        self.extra_skills_dirs = [Path(path) for path in (extra_skills_dirs or [])]
+        # Be forgiving about accidental leading/trailing whitespace in config values.
+        self.skills_dir = Path(str(skills_dir).strip())
+        self.extra_skills_dirs = [Path(str(path).strip()) for path in (extra_skills_dirs or [])]
         self.loaded_skills: Dict[str, Skill] = {}
 
     def _flatten_metadata(self, value: Any) -> str:
@@ -351,7 +352,7 @@ class SkillLoader:
         Returns:
             List of skill names
         """
-        return list(self.loaded_skills.keys())
+        return sorted(self.loaded_skills.keys())
 
     def get_skills_metadata_prompt(self) -> str:
         """
@@ -366,10 +367,13 @@ class SkillLoader:
 
         prompt_parts = ["## Available Skills\n"]
         prompt_parts.append("You have access to specialized skills. Each skill provides expert guidance for specific tasks.\n")
+        prompt_parts.append(
+            "Use `list_skills` when you need the complete loaded skill inventory, including bundled and user-installed skills.\n"
+        )
         prompt_parts.append("Load a skill's full content using the appropriate skill tool when needed.\n")
 
         # List all skills with their descriptions
-        for skill in self.loaded_skills.values():
+        for skill in sorted(self.loaded_skills.values(), key=lambda item: item.name.lower()):
             prompt_parts.append(f"- `{skill.name}`: {skill.description}")
 
         return "\n".join(prompt_parts)

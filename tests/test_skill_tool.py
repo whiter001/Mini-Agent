@@ -2,8 +2,8 @@
 Test Skill Tool
 
 Tests for skill tools after Progressive Disclosure optimization:
-- Only GetSkillTool remains (ListSkillsTool and UseSkillTool removed)
-- Tests verify the single-tool approach
+- list_skills exposes the full loaded skill inventory
+- get_skill loads the full guidance for one skill on demand
 """
 
 import tempfile
@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from mini_agent.tools.skill_loader import SkillLoader
-from mini_agent.tools.skill_tool import GetSkillTool, create_skill_tools
+from mini_agent.tools.skill_tool import GetSkillTool, ListSkillsTool, create_skill_tools
 
 
 def create_test_skill(skill_dir: Path, name: str, description: str, content: str):
@@ -62,6 +62,21 @@ async def test_get_skill_tool(skill_loader):
 
 
 @pytest.mark.asyncio
+async def test_list_skills_tool(skill_loader):
+    """Test ListSkillsTool"""
+    tool = ListSkillsTool(skill_loader)
+
+    result = await tool.execute()
+
+    assert result.success
+    assert "Loaded Skills" in result.content
+    assert "test-skill-0" in result.content
+    assert "test-skill-1" in result.content
+    assert "Total loaded skills: 2" in result.content
+    assert "Source:" in result.content
+
+
+@pytest.mark.asyncio
 async def test_get_skill_tool_nonexistent(skill_loader):
     """Test getting non-existent skill"""
     tool = GetSkillTool(skill_loader)
@@ -72,8 +87,8 @@ async def test_get_skill_tool_nonexistent(skill_loader):
     assert "不存在" in result.error or "not exist" in result.error.lower()
 
 
-def test_create_skill_tools_returns_single_tool(skill_loader):
-    """Test that create_skill_tools only returns GetSkillTool after optimization"""
+def test_create_skill_tools_returns_skill_tools(skill_loader):
+    """Test that create_skill_tools returns both list and get tools"""
     with tempfile.TemporaryDirectory() as tmpdir:
         skill_dir = Path(tmpdir) / "test-skill"
         skill_dir.mkdir()
@@ -83,14 +98,15 @@ def test_create_skill_tools_returns_single_tool(skill_loader):
 
         tools, loader = create_skill_tools(tmpdir)
 
-        # Should only have one tool now (GetSkillTool)
-        assert len(tools) == 1
-        assert isinstance(tools[0], GetSkillTool)
+        # Should have two tools now (ListSkillsTool + GetSkillTool)
+        assert len(tools) == 2
+        assert isinstance(tools[0], ListSkillsTool)
+        assert isinstance(tools[1], GetSkillTool)
         assert loader is not None
 
 
 def test_tool_count_optimization():
-    """Verify Progressive Disclosure optimization: 3 tools -> 1 tool"""
+    """Verify Progressive Disclosure optimization: list + get skill tools"""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create a simple test skill
         skill_dir = Path(tmpdir) / "simple-skill"
@@ -101,11 +117,8 @@ def test_tool_count_optimization():
 
         tools, _ = create_skill_tools(tmpdir)
 
-        # After optimization, should only have 1 tool (GetSkillTool)
-        # Before optimization, we had 3 tools (ListSkillsTool, GetSkillTool, UseSkillTool)
-        assert len(tools) == 1
+        # After optimization, we expose 2 tools (ListSkillsTool, GetSkillTool)
+        assert len(tools) == 2
 
-        # Verify it's GetSkillTool
-        tool = tools[0]
-        assert tool.name == "get_skill"
-        assert "get complete content" in tool.description.lower() or "获取" in tool.description
+        # Verify the tool set is complete and ordered
+        assert [tool.name for tool in tools] == ["list_skills", "get_skill"]

@@ -122,12 +122,16 @@ model: "MiniMax-M2.7"
 ```
 
 Auto-generated skills are stored in `~/.mini-agent/skills/` by default and are scanned alongside bundled skills.
+If you want to keep additional custom skills, set `skills_external_dirs` in `~/.mini-agent/config/config.yaml`.
 
 **Start Using:**
 
 ```bash
 mini-agent                                    # Use current directory as workspace
 mini-agent --workspace /path/to/your/project  # Specify workspace directory
+mini-agent -p "list current skills"           # Execute a prompt non-interactively and exit
+mini-agent help                               # Show CLI help
+mini-agent help log                           # Show log command help
 mini-agent --version                          # Check version
 
 # Management commands
@@ -204,6 +208,7 @@ uv tool install -e .
 # After installation, run from anywhere and code changes take effect immediately
 mini-agent
 mini-agent --workspace /path/to/your/project
+mini-agent -p "list current skills"
 ```
 
 > 📖 For more development guidance, see [Development Guide](docs/DEVELOPMENT_GUIDE.md)

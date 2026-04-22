@@ -63,6 +63,8 @@ When running the agent in interactive mode (`mini-agent`), the following command
 | `/history`             | Show the current session message count                      |
 | `/stats`               | Display session statistics (steps, tool calls, tokens used) |
 
+Use `mini-agent help` from the terminal to print the CLI command overview, and `mini-agent help log` for log-specific help.
+
 ### 2.2 Integrated MCP Tools
 
 This project comes with pre-configured MCP (Model Context Protocol) tools that extend the agent's capabilities:

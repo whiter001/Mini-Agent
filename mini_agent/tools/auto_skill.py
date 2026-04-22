@@ -225,7 +225,7 @@ Use this skill when the task matches the recorded workflow below.
 
 
 def _write_skill(auto_skill_dir: str, skill_name: str, skill_content: str) -> Path:
-    root = Path(auto_skill_dir).expanduser()
+    root = Path(str(auto_skill_dir).strip()).expanduser()
     root.mkdir(parents=True, exist_ok=True)
 
     skill_dir = root / skill_name

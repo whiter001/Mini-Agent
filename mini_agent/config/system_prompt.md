@@ -20,10 +20,11 @@ Skills are loaded dynamically using **Progressive Disclosure**:
 
 **How to Use Skills:**
 
-1. Check the metadata below to identify relevant skills for your task
-2. Call `get_skill(skill_name)` to load the full guidance
-3. Follow the skill's instructions and use appropriate tools (bash, file operations, etc.)
-4. If a relevant skill block is already auto-loaded for the current turn, treat it as the primary guidance for that request
+1. If the user asks to list or verify available skills, call `list_skills` first and present the full result without omitting entries
+2. Check the metadata below to identify relevant skills for your task
+3. Call `get_skill(skill_name)` to load the full guidance
+4. Follow the skill's instructions and use appropriate tools (bash, file operations, etc.)
+5. If a relevant skill block is already auto-loaded for the current turn, treat it as the primary guidance for that request
 
 **Important Notes:**
 
