@@ -6,7 +6,7 @@ Provides unified configuration loading and management functionality
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class RetryConfig(BaseModel):
@@ -60,6 +60,8 @@ class ToolsConfig(BaseModel):
     enable_memory: bool = True
     enable_auto_skill_creation: bool = True
     auto_skill_min_tool_calls: int = Field(default=5, gt=0)
+    auto_skill_candidate_score: int = Field(default=5, gt=0)
+    auto_skill_approved_score: int = Field(default=8, gt=0)
     auto_skill_dir: str = "~/.mini-agent/skills"
     skills_external_dirs: list[str] = Field(default_factory=lambda: ["~/.mini-agent/skills"])
     skills_dir: str = "./skills"
@@ -68,6 +70,13 @@ class ToolsConfig(BaseModel):
     enable_mcp: bool = True
     mcp_config_path: str = "mcp.json"
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+
+    @model_validator(mode="after")
+    def validate_auto_skill_quality_thresholds(self) -> "ToolsConfig":
+        """Ensure approved threshold is never lower than candidate threshold."""
+        if self.auto_skill_approved_score < self.auto_skill_candidate_score:
+            raise ValueError("auto_skill_approved_score must be greater than or equal to auto_skill_candidate_score")
+        return self
 
 
 class Config(BaseModel):
@@ -163,6 +172,8 @@ class Config(BaseModel):
             enable_memory=tools_data.get("enable_memory", True),
             enable_auto_skill_creation=tools_data.get("enable_auto_skill_creation", True),
             auto_skill_min_tool_calls=tools_data.get("auto_skill_min_tool_calls", 5),
+            auto_skill_candidate_score=tools_data.get("auto_skill_candidate_score", 5),
+            auto_skill_approved_score=tools_data.get("auto_skill_approved_score", 8),
             auto_skill_dir=tools_data.get("auto_skill_dir", "~/.mini-agent/skills"),
             skills_external_dirs=tools_data.get("skills_external_dirs", ["~/.mini-agent/skills"]),
             skills_dir=tools_data.get("skills_dir", "./skills"),

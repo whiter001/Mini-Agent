@@ -502,12 +502,18 @@ async def initialize_base_tools(config: Config):
     return tools, skill_loader, memory_store
 
 
-def build_turn_context(memory_store: MemoryStore | None, skill_loader, query: str, max_skills: int) -> list[Message]:
+def build_turn_context(
+    memory_store: MemoryStore | None,
+    skill_loader,
+    query: str,
+    max_skills: int,
+    enable_auto_skills: bool = True,
+) -> list[Message]:
     """Build temporary per-turn context from durable memory and auto-selected skills."""
     context: list[Message] = []
     if memory_store is not None:
         context.extend(memory_store.build_turn_context(query))
-    if skill_loader is not None:
+    if enable_auto_skills and skill_loader is not None:
         context.extend(build_auto_skill_context(skill_loader, query, max_skills=max_skills))
     return context
 
@@ -529,13 +535,20 @@ def _maybe_persist_auto_skill(
         final_result,
         auto_skill_dir=config.tools.auto_skill_dir,
         min_tool_calls=config.tools.auto_skill_min_tool_calls,
+        candidate_score_threshold=config.tools.auto_skill_candidate_score,
+        approved_score_threshold=config.tools.auto_skill_approved_score,
     )
     if result.created:
-        if skill_loader is not None:
-            skill_loader.discover_skills()
+        if skill_loader is not None and result.skill_path is not None and result.tier == "approved":
+            loaded_skill = skill_loader.load_skill(result.skill_path)
+            if loaded_skill is not None:
+                skill_loader.loaded_skills[loaded_skill.name] = loaded_skill
+            else:
+                skill_loader.discover_skills()
+        tier_label = result.tier or "approved"
         print(
-            f"{Colors.BRIGHT_GREEN}🧠 Auto skill created:{Colors.RESET} "
-            f"{result.skill_name} -> {result.skill_path}"
+            f"{Colors.BRIGHT_GREEN}🧠 Auto skill {tier_label} created:{Colors.RESET} "
+            f"{result.skill_name} -> {result.skill_path} {Colors.DIM}(score={result.quality_score}){Colors.RESET}"
         )
 
 
@@ -733,7 +746,15 @@ async def run_agent(workspace_dir: Path, prompt: str = None):
         print(f"\n{Colors.BRIGHT_BLUE}Agent{Colors.RESET} {Colors.DIM}›{Colors.RESET} {Colors.DIM}Executing prompt...{Colors.RESET}\n")
         turn_start_index = len(agent.messages)
         agent.add_user_message(prompt)
-        agent.set_ephemeral_context(build_turn_context(memory_store, skill_loader, prompt, config.tools.auto_skills_limit))
+        agent.set_ephemeral_context(
+            build_turn_context(
+                memory_store,
+                skill_loader,
+                prompt,
+                config.tools.auto_skills_limit,
+                enable_auto_skills=config.tools.enable_auto_skills,
+            )
+        )
         try:
             final_result = await agent.run()
             _maybe_persist_auto_skill(config, skill_loader, agent, turn_start_index, final_result)
@@ -867,7 +888,15 @@ async def run_agent(workspace_dir: Path, prompt: str = None):
             )
             turn_start_index = len(agent.messages)
             agent.add_user_message(user_input)
-            agent.set_ephemeral_context(build_turn_context(memory_store, skill_loader, user_input, config.tools.auto_skills_limit))
+            agent.set_ephemeral_context(
+                build_turn_context(
+                    memory_store,
+                    skill_loader,
+                    user_input,
+                    config.tools.auto_skills_limit,
+                    enable_auto_skills=config.tools.enable_auto_skills,
+                )
+            )
 
             # Create cancellation event
             cancel_event = asyncio.Event()

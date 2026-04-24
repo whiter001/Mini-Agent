@@ -122,6 +122,7 @@ model: "MiniMax-M2.7"
 ```
 
 自动生成的 skills 默认存放在 `~/.mini-agent/skills/`，并会与内置 skills 一起扫描加载。
+置信度较低的自动生成流程会先保存到 `~/.mini-agent/skills/_candidates/` 中，默认不会自动加载，便于后续检查与筛选。
 如果你还想添加更多自定义 skills，可以在 `~/.mini-agent/config/config.yaml` 里配置 `skills_external_dirs`。
 
 **开始使用：**

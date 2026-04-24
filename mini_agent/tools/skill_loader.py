@@ -58,7 +58,12 @@ class SkillLoader:
 
     _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+")
 
-    def __init__(self, skills_dir: str = "./skills", extra_skills_dirs: Optional[List[str]] = None):
+    def __init__(
+        self,
+        skills_dir: str = "./skills",
+        extra_skills_dirs: Optional[List[str]] = None,
+        ignored_skill_dir_names: Optional[List[str]] = None,
+    ):
         """
         Initialize Skill Loader
 
@@ -69,6 +74,11 @@ class SkillLoader:
         # Be forgiving about accidental leading/trailing whitespace in config values.
         self.skills_dir = Path(str(skills_dir).strip())
         self.extra_skills_dirs = [Path(str(path).strip()) for path in (extra_skills_dirs or [])]
+        self.ignored_skill_dir_names = {
+            str(name).strip()
+            for name in (ignored_skill_dir_names or ["_candidates"])
+            if str(name).strip()
+        }
         self.loaded_skills: Dict[str, Skill] = {}
 
     def _flatten_metadata(self, value: Any) -> str:
@@ -294,12 +304,18 @@ class SkillLoader:
 
             # Recursively find all SKILL.md files
             for skill_file in skills_dir.rglob("SKILL.md"):
+                if self._should_ignore_skill_path(skill_file):
+                    continue
                 skill = self.load_skill(skill_file)
                 if skill and skill.name not in self.loaded_skills:
                     skills.append(skill)
                     self.loaded_skills[skill.name] = skill
 
         return skills
+
+    def _should_ignore_skill_path(self, skill_file: Path) -> bool:
+        """Skip skill files stored in non-loadable internal directories."""
+        return any(part in self.ignored_skill_dir_names for part in skill_file.parts)
 
     def _iter_skill_dirs(self) -> List[Path]:
         """Return skill directories in precedence order."""

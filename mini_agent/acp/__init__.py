@@ -126,7 +126,13 @@ class MiniMaxACPAgent:
         turn_start_index = len(state.agent.messages)
         state.agent.messages.append(Message(role="user", content=user_text))
         state.agent.set_ephemeral_context(
-            build_turn_context(self._memory_store, self._skill_loader, user_text, self._config.tools.auto_skills_limit)
+            build_turn_context(
+                self._memory_store,
+                self._skill_loader,
+                user_text,
+                self._config.tools.auto_skills_limit,
+                enable_auto_skills=self._config.tools.enable_auto_skills,
+            )
         )
         try:
             stop_reason, final_result = await self._run_turn(state, params.sessionId)

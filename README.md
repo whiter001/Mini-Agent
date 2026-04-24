@@ -122,6 +122,7 @@ model: "MiniMax-M2.7"
 ```
 
 Auto-generated skills are stored in `~/.mini-agent/skills/` by default and are scanned alongside bundled skills.
+Lower-confidence generated workflows are saved under `~/.mini-agent/skills/_candidates/` for review and are not auto-loaded until promoted.
 If you want to keep additional custom skills, set `skills_external_dirs` in `~/.mini-agent/config/config.yaml`.
 
 **Start Using:**
