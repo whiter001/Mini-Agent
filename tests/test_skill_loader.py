@@ -75,8 +75,53 @@ Skill content here.
         assert skill.name == "test-skill"
         assert skill.license == "MIT"
         assert skill.allowed_tools == ["read_file", "write_file"]
+        assert skill.tools == ["read_file", "write_file"]
         assert skill.metadata["author"] == "Test Author"
         assert skill.metadata["version"] == "1.0"
+
+
+def test_load_skill_parses_structured_frontmatter_and_sections():
+    """Structured autoskill metadata should be available for ranking and context extraction."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        skill_dir = Path(tmpdir) / "browser-flow"
+        skill_dir.mkdir()
+
+        skill_file = skill_dir / "SKILL.md"
+        skill_file.write_text(
+            """---
+name: browser-flow
+description: Browser automation workflow
+tools:
+  - autobrowser
+  - bash
+tags:
+  - browser
+  - automation
+triggers:
+  - 执行autobrowser help
+platform: windows
+---
+
+# Overview
+
+Use this skill when you need to drive autobrowser from the CLI.
+
+## Validation
+
+Confirm that the browser command completes successfully.
+""",
+            encoding="utf-8",
+        )
+
+        loader = SkillLoader(tmpdir)
+        skill = loader.load_skill(skill_file)
+
+        assert skill is not None
+        assert skill.tools == ["autobrowser", "bash"]
+        assert skill.tags == ["browser", "automation"]
+        assert skill.triggers == ["执行autobrowser help"]
+        assert skill.platform == "windows"
+        assert [section.heading for section in skill.sections if section.heading] == ["Overview", "Validation"]
 
 
 def test_load_invalid_skill():

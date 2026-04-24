@@ -102,6 +102,37 @@ def test_select_relevant_skills_uses_metadata_tags():
         assert selected[0].name == "slides"
 
 
+def test_select_relevant_skills_prefers_mixed_language_triggers():
+    """Mixed Chinese/English prompts should favor skills with matching triggers and tool metadata."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        browser_dir = Path(tmpdir) / "browser-flow"
+        browser_dir.mkdir()
+        create_test_skill(
+            browser_dir,
+            "browser-flow",
+            "Autobrowser workflow helper",
+            "# Overview\n\nUse this skill when you need to control Chrome with autobrowser.",
+            metadata="""tools:\n  - autobrowser\ntriggers:\n  - 执行autobrowser help\ntags:\n  - browser\n  - automation\nplatform: windows\n""",
+        )
+
+        generic_dir = Path(tmpdir) / "generic-help"
+        generic_dir.mkdir()
+        create_test_skill(
+            generic_dir,
+            "generic-help",
+            "Generic troubleshooting notes",
+            "Use this skill for general command line tasks.",
+        )
+
+        loader = SkillLoader(tmpdir)
+        loader.discover_skills()
+
+        selected = loader.select_relevant_skills("执行autobrowser help", max_skills=1)
+
+        assert len(selected) == 1
+        assert selected[0].name == "browser-flow"
+
+
 def test_build_auto_skill_context_returns_system_message():
     """Auto skill context should be wrapped as a temporary system message."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -124,6 +155,44 @@ def test_build_auto_skill_context_returns_system_message():
         assert context[0].role == "system"
         assert "Auto-loaded Skills" in context[0].content
         assert "pdf" in context[0].content.lower()
+
+
+def test_auto_skill_prompt_prefers_relevant_sections():
+    """Auto-loaded skill context should highlight the most relevant sections instead of dumping the whole skill."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        browser_dir = Path(tmpdir) / "browser-flow"
+        browser_dir.mkdir()
+        create_test_skill(
+            browser_dir,
+            "browser-flow",
+            "Autobrowser workflow helper",
+            """# Overview
+
+Use this skill when you need to drive autobrowser from the CLI.
+
+## Installation
+
+Install dependencies and prepare the environment.
+
+## Troubleshooting
+
+If `autobrowser help` fails or times out, rerun the command with verbose logging and inspect the browser connection state.
+
+## Release Checklist
+
+Publish packages and update release notes.
+""",
+            metadata="""tools:\n  - autobrowser\ntriggers:\n  - 执行autobrowser help\n""",
+        )
+
+        loader = SkillLoader(tmpdir)
+        loader.discover_skills()
+
+        prompt = loader.get_auto_skills_prompt("执行autobrowser help 失败怎么排查", max_skills=1)
+
+        assert "### Troubleshooting" in prompt
+        assert "### Release Checklist" not in prompt
+        assert "Skill Root Directory" in prompt
 
 
 def test_build_turn_context_respects_auto_skill_toggle():

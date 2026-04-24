@@ -5,11 +5,29 @@ Supports loading skills from SKILL.md files and providing them to Agent
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
+
+
+@dataclass
+class SkillSection:
+    """Structured markdown section extracted from a skill."""
+
+    heading: str
+    level: int
+    content: str
+
+
+@dataclass
+class QueryProfile:
+    """Normalized query profile used for skill ranking."""
+
+    raw: str
+    tokens: List[str]
+    compact: str
 
 
 @dataclass
@@ -23,6 +41,11 @@ class Skill:
     allowed_tools: Optional[List[str]] = None
     metadata: Optional[Dict[str, Any]] = None
     skill_path: Optional[Path] = None
+    tags: List[str] = field(default_factory=list)
+    tools: List[str] = field(default_factory=list)
+    triggers: List[str] = field(default_factory=list)
+    platform: str = ""
+    sections: List[SkillSection] = field(default_factory=list)
 
     def to_prompt(self, max_content_chars: int | None = None) -> str:
         """Convert skill to prompt format."""
@@ -56,7 +79,8 @@ All files and references in this skill are relative to this directory.
 class SkillLoader:
     """Skill loader"""
 
-    _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+")
+    _TOKEN_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+|[A-Za-z0-9][A-Za-z0-9._/-]*")
+    _TOKEN_SPLIT_PATTERN = re.compile(r"[._/-]+")
 
     def __init__(
         self,
@@ -94,13 +118,104 @@ class SkillLoader:
             return " ".join(self._flatten_metadata(item) for item in value)
         return str(value)
 
-    def _tokenize(self, text: str) -> set[str]:
+    def _unique_ordered_strings(self, values: List[str]) -> List[str]:
+        """Deduplicate strings while preserving their original order."""
+        items: List[str] = []
+        seen = set()
+        for value in values:
+            trimmed = str(value).strip()
+            if not trimmed:
+                continue
+            key = trimmed.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(trimmed)
+        return items
+
+    def _normalize_string_list(self, value: Any) -> List[str]:
+        """Normalize YAML scalar/list fields into a clean string list."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            items = [part.strip() for part in value.split(",")] if "," in value else [value.strip()]
+            return self._unique_ordered_strings(items)
+        if isinstance(value, (list, tuple, set)):
+            items: List[str] = []
+            for item in value:
+                items.extend(self._normalize_string_list(item))
+            return self._unique_ordered_strings(items)
+        return self._unique_ordered_strings([str(value)])
+
+    def _expand_token(self, token: str) -> List[str]:
+        """Expand mixed-language tokens into searchable variants."""
+        trimmed = token.strip().lower()
+        if not trimmed:
+            return []
+
+        items = [trimmed]
+        if self._TOKEN_SPLIT_PATTERN.search(trimmed):
+            items.extend(part for part in self._TOKEN_SPLIT_PATTERN.split(trimmed) if part)
+
+        if self._contains_han(trimmed):
+            runes = list(trimmed)
+            if len(runes) > 2:
+                max_gram = min(4, len(runes))
+                for size in range(2, max_gram + 1):
+                    for start in range(0, len(runes) - size + 1):
+                        items.append("".join(runes[start : start + size]))
+
+        return self._unique_ordered_strings(items)
+
+    def _contains_han(self, text: str) -> bool:
+        """Return True when the text contains CJK Han characters."""
+        return any("\u3400" <= char <= "\u9fff" for char in text)
+
+    def _tokenize(self, text: str) -> List[str]:
         """Split text into normalized search tokens."""
-        return {
-            token.lower()
-            for token in self._TOKEN_PATTERN.findall(text.lower())
-            if len(token) > 1
-        }
+        tokens: List[str] = []
+        seen = set()
+        for match in self._TOKEN_PATTERN.findall(text.lower()):
+            for token in self._expand_token(match):
+                normalized = token.strip(" ,.;:!?()[]{}<>\"'`")
+                if len(normalized) <= 1 or normalized in seen:
+                    continue
+                seen.add(normalized)
+                tokens.append(normalized)
+        return tokens
+
+    def _compact_text(self, text: str) -> str:
+        """Compact text into a separator-free representation for phrase matching."""
+        return "".join(self._TOKEN_PATTERN.findall(text.lower()))
+
+    def _build_query_profile(self, query: str) -> QueryProfile:
+        """Build a reusable query profile for ranking and context extraction."""
+        normalized = query.strip()
+        return QueryProfile(
+            raw=normalized,
+            tokens=self._tokenize(normalized),
+            compact=self._compact_text(normalized),
+        )
+
+    def _field_token_score(self, text: str, tokens: List[str], weight: int) -> int:
+        """Return a weighted score for token matches inside a text field."""
+        if not tokens or not text or weight <= 0:
+            return 0
+        normalized = text.lower()
+        return sum(weight for token in tokens if token in normalized)
+
+    def _phrase_score(self, text: str, query_compact: str, weight: int) -> int:
+        """Score exact-ish phrase matches after removing separators."""
+        if not text or not query_compact or weight <= 0:
+            return 0
+        return weight if query_compact in self._compact_text(text) else 0
+
+    def _matches_all_tokens(self, text: str, tokens: List[str]) -> bool:
+        """Return True when every normalized token appears in the text."""
+        if not tokens:
+            return False
+        normalized = text.lower()
+        return all(token in normalized for token in tokens)
 
     def _build_search_text(self, skill: Skill) -> str:
         """Build the searchable text for a skill."""
@@ -109,34 +224,230 @@ class SkillLoader:
             part
             for part in [
                 skill.name,
-                skill.name,
                 skill.description,
-                skill.description,
+                " ".join(skill.tags),
+                " ".join(skill.tools),
+                " ".join(skill.triggers),
+                skill.platform,
                 metadata_text,
+                " ".join(section.heading for section in skill.sections if section.heading),
                 skill.content[:2000],
             ]
             if part
         )
 
-    def _score_skill(self, skill: Skill, query_terms: set[str], query_text: str) -> int:
+    def _score_skill(self, skill: Skill, query: QueryProfile) -> int:
         """Score how relevant a skill is for the query."""
-        search_text = self._build_search_text(skill)
-        skill_terms = self._tokenize(search_text)
-        score = len(query_terms & skill_terms)
-
-        normalized_name = skill.name.lower().replace("-", " ")
-        if normalized_name and normalized_name in query_text:
-            score += 5
-
-        normalized_description = skill.description.lower()
-        if normalized_description and normalized_description in query_text:
-            score += 3
-
         metadata_text = self._flatten_metadata(skill.metadata).lower()
-        if metadata_text and metadata_text in query_text:
-            score += 2
+        score = 0
+
+        score += self._phrase_score(skill.name, query.compact, 28)
+        score += self._phrase_score(" ".join(skill.tools), query.compact, 22)
+        score += self._phrase_score(" ".join(skill.triggers), query.compact, 18)
+        score += self._phrase_score(skill.description, query.compact, 12)
+
+        score += self._field_token_score(skill.name, query.tokens, 12)
+        score += self._field_token_score(" ".join(skill.tools), query.tokens, 10)
+        score += self._field_token_score(" ".join(skill.triggers), query.tokens, 9)
+        score += self._field_token_score(" ".join(skill.tags), query.tokens, 8)
+        score += self._field_token_score(skill.platform, query.tokens, 8)
+        score += self._field_token_score(skill.description, query.tokens, 6)
+        score += self._field_token_score(metadata_text, query.tokens, 4)
+        for section in skill.sections:
+            score += self._field_token_score(section.heading, query.tokens, 4)
+        score += self._field_token_score(skill.content, query.tokens, 2)
+
+        if self._matches_all_tokens(
+            " ".join(
+                part
+                for part in [
+                    skill.name,
+                    skill.description,
+                    " ".join(skill.tools),
+                    " ".join(skill.triggers),
+                    " ".join(skill.tags),
+                    skill.platform,
+                    metadata_text,
+                ]
+                if part
+            ),
+            query.tokens,
+        ):
+            score += 10
 
         return score
+
+    def _parse_heading(self, line: str) -> tuple[str, int] | None:
+        """Parse a markdown heading line into heading text and level."""
+        trimmed = line.strip()
+        if not trimmed or not trimmed.startswith("#"):
+            return None
+
+        level = 0
+        while level < len(trimmed) and trimmed[level] == "#":
+            level += 1
+
+        if level == 0 or level >= len(trimmed) or trimmed[level] != " ":
+            return None
+
+        return trimmed[level:].strip(), level
+
+    def _parse_skill_sections(self, content: str) -> List[SkillSection]:
+        """Split a skill markdown body into structured sections."""
+        sections: List[SkillSection] = []
+        current_heading = ""
+        current_level = 0
+        current_lines: List[str] = []
+
+        def flush() -> None:
+            nonlocal current_heading, current_level, current_lines
+            text = "\n".join(current_lines).strip()
+            if not current_heading and not text:
+                current_lines = []
+                return
+            sections.append(SkillSection(heading=current_heading, level=current_level, content=text))
+            current_heading = ""
+            current_level = 0
+            current_lines = []
+
+        for line in content.splitlines():
+            heading = self._parse_heading(line)
+            if heading is not None:
+                flush()
+                current_heading, current_level = heading
+                continue
+            current_lines.append(line)
+
+        flush()
+        return sections
+
+    def _first_populated_sections(self, sections: List[SkillSection], max_sections: int) -> List[SkillSection]:
+        """Return the first non-empty sections as a stable fallback."""
+        selected: List[SkillSection] = []
+        for section in sections:
+            if not section.content.strip():
+                continue
+            selected.append(section)
+            if len(selected) >= max_sections:
+                break
+        return selected
+
+    def _score_section(self, section: SkillSection, query: QueryProfile) -> int:
+        """Score how relevant a section is for a query."""
+        score = 0
+        score += self._phrase_score(section.heading, query.compact, 14)
+        score += self._phrase_score(section.content, query.compact, 6)
+        score += self._field_token_score(section.heading, query.tokens, 6)
+        score += self._field_token_score(section.content, query.tokens, 2)
+        return score
+
+    def _select_relevant_sections(
+        self,
+        skill: Skill,
+        query: QueryProfile,
+        max_sections: int = 2,
+    ) -> List[SkillSection]:
+        """Select the most relevant sections for the current request."""
+        if not skill.sections:
+            return []
+        if max_sections <= 0:
+            max_sections = 2
+        if not query.tokens:
+            return self._first_populated_sections(skill.sections, max_sections)
+
+        scored_sections: List[tuple[int, int, SkillSection]] = []
+        for index, section in enumerate(skill.sections):
+            if not section.content.strip():
+                continue
+            score = self._score_section(section, query)
+            if index == 0 and score == 0:
+                score = 1
+            if score > 0:
+                scored_sections.append((score, index, section))
+
+        if not scored_sections:
+            return self._first_populated_sections(skill.sections, max_sections)
+
+        scored_sections.sort(key=lambda item: (-item[0], item[1]))
+        return [section for _, _, section in scored_sections[:max_sections]]
+
+    def _truncate_middle(self, text: str, max_chars: int) -> tuple[str, bool]:
+        """Truncate text from the middle while keeping both ends visible."""
+        cleaned = text.strip()
+        if max_chars < 0 or len(cleaned) <= max_chars:
+            return cleaned, False
+        if max_chars <= 3:
+            return cleaned[:max_chars], True
+
+        remaining = max_chars - 3
+        left = remaining // 2
+        right = remaining - left
+        return f"{cleaned[:left].rstrip()}...{cleaned[-right:].lstrip()}", True
+
+    def _build_relevant_excerpt(
+        self,
+        skill: Skill,
+        query: QueryProfile,
+        max_content_chars: int,
+    ) -> tuple[str, bool]:
+        """Render a focused excerpt that favors the most relevant sections."""
+        selected_sections = self._select_relevant_sections(skill, query, max_sections=2)
+        if not selected_sections:
+            return self._truncate_middle(skill.content, max_content_chars)
+
+        per_section_limit = max(240, max_content_chars // max(1, len(selected_sections)))
+        parts: List[str] = []
+        section_truncated = False
+        for section in selected_sections:
+            if not section.content.strip():
+                continue
+            heading = section.heading or "Overview"
+            snippet, was_truncated = self._truncate_middle(section.content, per_section_limit)
+            section_truncated = section_truncated or was_truncated
+            parts.append(f"### {heading}\n{snippet}")
+
+        if not parts:
+            return self._truncate_middle(skill.content, max_content_chars)
+
+        excerpt, excerpt_truncated = self._truncate_middle("\n\n".join(parts), max_content_chars)
+        return excerpt, section_truncated or excerpt_truncated
+
+    def _render_skill_context(
+        self,
+        index: int,
+        skill: Skill,
+        query: QueryProfile,
+        max_content_chars: int,
+    ) -> str:
+        """Render a compact, section-aware prompt block for an auto-selected skill."""
+        skill_root = str(skill.skill_path.parent) if skill.skill_path else "unknown"
+        lines = [
+            f"{index}. {skill.name}: {skill.description}",
+            f"Skill Root Directory: `{skill_root}`",
+            "All files and references in this skill are relative to this directory.",
+        ]
+
+        metadata_lines: List[str] = []
+        if skill.tools:
+            metadata_lines.append("Tools: " + ", ".join(skill.tools))
+        if skill.tags:
+            metadata_lines.append("Tags: " + ", ".join(skill.tags))
+        if skill.triggers:
+            metadata_lines.append("Triggers: " + ", ".join(skill.triggers))
+        if skill.platform:
+            metadata_lines.append("Platform: " + skill.platform)
+        if metadata_lines:
+            lines.append("\n".join(metadata_lines))
+
+        excerpt, truncated = self._build_relevant_excerpt(skill, query, max_content_chars=max_content_chars)
+        if excerpt:
+            lines.append(excerpt)
+        if truncated:
+            lines.append(
+                "... [Skill content truncated to keep the request within the context window. Use get_skill for the full version.] ..."
+            )
+
+        return "\n".join(lines)
 
     def load_skill(self, skill_path: Path) -> Optional[Skill]:
         """
@@ -168,6 +479,10 @@ class SkillLoader:
                 print(f"❌ Failed to parse YAML frontmatter: {e}")
                 return None
 
+            if not isinstance(frontmatter, dict):
+                print(f"⚠️  {skill_path} frontmatter must be a mapping")
+                return None
+
             # Required fields
             if "name" not in frontmatter or "description" not in frontmatter:
                 print(f"⚠️  {skill_path} missing required fields (name or description)")
@@ -179,16 +494,28 @@ class SkillLoader:
             # Replace relative paths in content with absolute paths
             # This ensures scripts and resources can be found from any working directory
             processed_content = self._process_skill_paths(skill_content, skill_dir)
+            allowed_tools = self._normalize_string_list(frontmatter.get("allowed-tools"))
+            tools = self._unique_ordered_strings(
+                [
+                    *self._normalize_string_list(frontmatter.get("tools")),
+                    *allowed_tools,
+                ]
+            )
 
             # Create Skill object
             skill = Skill(
-                name=frontmatter["name"],
-                description=frontmatter["description"],
+                name=str(frontmatter["name"]).strip(),
+                description=str(frontmatter["description"]).strip(),
                 content=processed_content,
                 license=frontmatter.get("license"),
-                allowed_tools=frontmatter.get("allowed-tools"),
+                allowed_tools=allowed_tools or None,
                 metadata=frontmatter.get("metadata"),
                 skill_path=skill_path,
+                tags=self._normalize_string_list(frontmatter.get("tags")),
+                tools=tools,
+                triggers=self._normalize_string_list(frontmatter.get("triggers")),
+                platform=str(frontmatter.get("platform") or "").strip(),
+                sections=self._parse_skill_sections(processed_content),
             )
 
             return skill
@@ -335,14 +662,13 @@ class SkillLoader:
         if max_skills <= 0 or not query.strip():
             return []
 
-        query_terms = self._tokenize(query)
-        if not query_terms:
+        query_profile = self._build_query_profile(query)
+        if not query_profile.tokens:
             return []
 
-        query_text = query.lower()
         scored_skills = []
         for skill in self.loaded_skills.values():
-            score = self._score_skill(skill, query_terms, query_text)
+            score = self._score_skill(skill, query_profile)
             if score > 0:
                 scored_skills.append((score, skill.name.lower(), skill))
 
@@ -355,13 +681,22 @@ class SkillLoader:
         if not selected_skills:
             return ""
 
+        query_profile = self._build_query_profile(query)
+
         prompt_parts = [
             "## Auto-loaded Skills",
             "The following skills were selected automatically for the current request. Follow them as the primary guidance for this turn.",
         ]
 
-        for skill in selected_skills:
-            prompt_parts.append(skill.to_prompt(max_content_chars=max_content_chars).strip())
+        for index, skill in enumerate(selected_skills, 1):
+            prompt_parts.append(
+                self._render_skill_context(
+                    index,
+                    skill,
+                    query_profile,
+                    max_content_chars=max_content_chars,
+                )
+            )
 
         return "\n\n".join(prompt_parts)
 
