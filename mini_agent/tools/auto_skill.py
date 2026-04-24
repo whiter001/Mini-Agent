@@ -38,8 +38,55 @@ _DISCOVERY_MARKERS = ("list ", "find ", "grep", "search", "read", "show", "cat "
 _ACTION_MARKERS = ("apply", "edit", "write", "create", "generate", "install", "run ", "python ", "node ", "mkdir", "copy ", "move ")
 _VALIDATION_MARKERS = ("pytest", "unittest", "test", "lint", "mypy", "ruff", "validate", "check", "verify", "diff", "status")
 _NO_ERROR_MARKERS = ("no error", "no errors", "without error", "without errors", "0 failed")
-_ERROR_MARKERS = ("[error]", "traceback", "exception", "failed", "cancelled", "timed out")
+_ERROR_MARKERS = (
+    "[error]",
+    "traceback",
+    "exception",
+    "failed",
+    "cancelled",
+    "timed out",
+    "syntaxerror",
+    "element not found",
+    "not a valid selector",
+)
 _SUCCESS_BLOCKERS = ("couldn't be completed", "unable to complete", "task failed")
+_PARTIAL_COMPLETION_MARKERS = (
+    "只显示了",
+    "仅显示了",
+    "只获取了",
+    "仅获取了",
+    "只返回了",
+    "仅返回了",
+    "只加载了",
+    "仅加载了",
+    "只能获取",
+    "只能返回",
+    "当前页面只显示",
+    "目前只显示",
+    "无法获取更多",
+    "未能获取更多",
+    "数量有限",
+    "only showed",
+    "only displayed",
+    "only found",
+    "only returned",
+    "only loaded",
+    "could only",
+    "currently shows",
+    "currently only",
+    "unable to fetch more",
+    "could not fetch more",
+    "limited to",
+)
+_REQUEST_COUNT_PATTERNS = (
+    re.compile(r"\b(?:top|first|latest)\s+(\d+)\s*(?:items?|results?|messages?|tweets?|posts?|records?|entries?)\b", re.IGNORECASE),
+    re.compile(r"\b(\d+)\s*(?:items?|results?|messages?|tweets?|posts?|records?|entries?)\b", re.IGNORECASE),
+    re.compile(r"(\d+)\s*(?:条|个|篇|项)\s*(?:消息|推文|帖子|结果|记录|内容)?"),
+)
+_LIMITED_RESULT_COUNT_PATTERNS = (
+    re.compile(r"(?:只|仅|目前只|当前只|当前页面只|只能|仅能)\s*(?:显示|获取|返回|找到|抓取|加载|看到|提供)?\s*[^\d]{0,12}(\d+)\s*(?:条|个|篇|项)?"),
+    re.compile(r"(?:only|just|currently|could only|limited to)\s*(?:show|display|find|fetch|get|return|load)?(?:ed|s)?\s*[^\d]{0,12}(\d+)\s*(?:items?|results?|messages?|tweets?|posts?|records?|entries?)?", re.IGNORECASE),
+)
 _WINDOWS_PATH_PATTERN = re.compile(r"[A-Za-z]:\\(?:[^\\/:*?\"<>|\r\n]+\\)*[^\\/:*?\"<>|\r\n]*")
 _UNIX_PATH_PATTERN = re.compile(r"(?<![A-Za-z0-9_])/(?:[^/\s]+/)*[^/\s]+")
 _TIMESTAMP_PATTERN = re.compile(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\b")
@@ -210,7 +257,8 @@ def _evaluate_auto_skill_quality(
     completed_steps = [step for step in trace if step.get("result")]
     successful_steps = [step for step in completed_steps if not _looks_like_error(_stringify_message_content(step.get("result", "")))]
     failed_steps = [step for step in completed_steps if _looks_like_error(_stringify_message_content(step.get("result", "")))]
-    successful = _looks_like_success(final_result)
+    completion_gap = _analyze_completion_gap(user_request, final_result)
+    successful = _looks_like_success(final_result) and not completion_gap["requirement_mismatch"]
     recovered = bool(failed_steps) and successful
     stable_completion = _has_stable_completion(trace, successful)
     meets_step_threshold = len(trace) >= min_tool_calls
@@ -235,6 +283,10 @@ def _evaluate_auto_skill_quality(
         "environment_risk": environment_risk,
         "result_specific": result_specific,
         "user_request_chars": len(user_request.strip()),
+        "requested_count": completion_gap["requested_count"],
+        "reported_count": completion_gap["reported_count"],
+        "partial_completion": completion_gap["partial_completion"],
+        "requirement_mismatch": completion_gap["requirement_mismatch"],
     }
 
     reasons: list[str] = []
@@ -246,6 +298,11 @@ def _evaluate_auto_skill_quality(
         reasons.append("final-result-successful")
     else:
         warnings.append("final-result-not-successful")
+
+    if completion_gap["partial_completion"]:
+        warnings.append("partial-completion-detected")
+    if completion_gap["requirement_mismatch"]:
+        warnings.append("requirement-mismatch")
 
     if meets_step_threshold:
         score += 2
@@ -268,6 +325,10 @@ def _evaluate_auto_skill_quality(
     elif recovered:
         score += 1
         reasons.append("recovered-from-failure")
+
+    if len(failed_steps) >= 2:
+        warnings.append("multiple-failed-steps")
+        score -= min(2, len(failed_steps) - 1)
 
     if multi_tool:
         score += 1
@@ -298,6 +359,8 @@ def _evaluate_auto_skill_quality(
     if too_few_steps:
         warnings.append("too-few-steps")
 
+    score = max(score, 0)
+
     should_create = successful and not too_few_steps and score >= candidate_score_threshold
     tier = ""
     if should_create:
@@ -318,6 +381,53 @@ def _extract_user_request(turn_messages: Sequence[Message]) -> str:
         if getattr(message, "role", "") == "user":
             return _stringify_message_content(getattr(message, "content", ""))
     return ""
+
+
+def _extract_requested_count(text: str) -> int | None:
+    for pattern in _REQUEST_COUNT_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        try:
+            count = int(match.group(1))
+        except (TypeError, ValueError):
+            continue
+        if count > 1:
+            return count
+    return None
+
+
+def _extract_limited_result_count(text: str) -> int | None:
+    for pattern in _LIMITED_RESULT_COUNT_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        try:
+            return int(match.group(1))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _analyze_completion_gap(user_request: str, final_result: str) -> dict[str, Any]:
+    requested_count = _extract_requested_count(user_request)
+    reported_count = _extract_limited_result_count(final_result)
+    lowered_result = final_result.lower()
+    partial_completion = bool(requested_count and any(marker in lowered_result for marker in _PARTIAL_COMPLETION_MARKERS))
+
+    requirement_mismatch = False
+    if requested_count:
+        if reported_count is not None:
+            requirement_mismatch = reported_count < requested_count
+        elif partial_completion:
+            requirement_mismatch = True
+
+    return {
+        "requested_count": requested_count,
+        "reported_count": reported_count,
+        "partial_completion": partial_completion,
+        "requirement_mismatch": requirement_mismatch,
+    }
 
 
 def _looks_like_error(text: str) -> bool:

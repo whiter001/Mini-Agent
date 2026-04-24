@@ -505,6 +505,35 @@ def test_auto_skill_creation_rejects_low_quality_single_step_workflow():
         assert result.quality_score > 0
 
 
+def test_auto_skill_creation_rejects_partial_completion_when_requested_count_not_met():
+    """Runs that finish cleanly but admit they missed the requested quantity should not become auto-skills."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        skill_dir = Path(tmpdir) / "skills"
+        loader = SkillLoader(str(skill_dir))
+        turn_messages = build_turn_messages(
+            "用autobrowser获取x.com里的15条正在关注的新消息",
+            [
+                ("bash", {"command": "autobrowser.cmd goto https://x.com/home"}, "Opened the feed."),
+                ("bash", {"command": "autobrowser.cmd click 查看新帖子"}, "Command failed with exit code 1\nelement not found: 查看新帖子"),
+                ("bash", {"command": "autobrowser.cmd eval tweets"}, "SyntaxError: Illegal return statement"),
+                ("bash", {"command": "autobrowser.cmd snapshot"}, "Captured snapshot successfully."),
+                ("bash", {"command": "autobrowser.cmd eval article-count"}, '{"tweetCount":8,"sample":"example"}'),
+            ],
+        )
+
+        result = maybe_create_auto_skill(
+            loader,
+            turn_messages,
+            "当前页面只显示了 4条推文（包含1条广告），未能达到请求的15条。",
+            auto_skill_dir=str(skill_dir),
+        )
+
+        assert result.created is False
+        assert result.reason == "quality-gate"
+        assert "partial-completion-detected" in result.quality_warnings
+        assert "requirement-mismatch" in result.quality_warnings
+
+
 def test_auto_skill_content_sanitizes_environment_specific_values():
     """Generated skill content should replace absolute paths, timestamps, and IDs with placeholders."""
     with tempfile.TemporaryDirectory() as tmpdir:
