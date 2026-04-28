@@ -1,10 +1,30 @@
 """Test cases for Bash Tool."""
 
 import asyncio
+import platform
 
 import pytest
 
 from mini_agent.tools.bash_tool import BackgroundShellManager, BashKillTool, BashOutputTool, BashTool
+
+
+def _shell_command(unix: str, windows: str) -> str:
+    return windows if platform.system() == "Windows" else unix
+
+
+def _sleep_command(seconds: int | float) -> str:
+    if platform.system() == "Windows":
+        if float(seconds).is_integer():
+            return f"Start-Sleep -Seconds {int(seconds)}"
+        return f"Start-Sleep -Milliseconds {int(seconds * 1000)}"
+    return f"sleep {seconds}"
+
+
+def _loop_command(prefix: str, count: int, delay_ms: int = 500) -> str:
+    if platform.system() == "Windows":
+        return f'1..{count} | ForEach-Object {{ Write-Output ("{prefix} $($_)"); Start-Sleep -Milliseconds {delay_ms} }}'
+    numbers = " ".join(str(i) for i in range(1, count + 1))
+    return f"for i in {numbers}; do echo '{prefix} '$i; sleep {delay_ms / 1000}; done"
 
 
 @pytest.mark.asyncio
@@ -13,7 +33,7 @@ async def test_foreground_command():
     print("\n=== Testing Foreground Command ===")
 
     bash_tool = BashTool()
-    result = await bash_tool.execute(command="echo 'Hello from foreground'")
+    result = await bash_tool.execute(command=_shell_command("echo 'Hello from foreground'", "Write-Output 'Hello from foreground'"))
 
     assert result.success
     assert "Hello from foreground" in result.stdout
@@ -27,7 +47,12 @@ async def test_foreground_command_with_stderr():
     print("\n=== Testing Stdout/Stderr Separation ===")
 
     bash_tool = BashTool()
-    result = await bash_tool.execute(command="echo 'stdout message' && echo 'stderr message' >&2")
+    result = await bash_tool.execute(
+        command=_shell_command(
+            "echo 'stdout message' && echo 'stderr message' >&2",
+            "Write-Output 'stdout message'; [Console]::Error.WriteLine('stderr message')",
+        )
+    )
 
     assert result.success
     assert "stdout message" in result.stdout
@@ -42,7 +67,7 @@ async def test_command_failure():
     print("\n=== Testing Command Failure ===")
 
     bash_tool = BashTool()
-    result = await bash_tool.execute(command="ls /nonexistent_directory_12345")
+    result = await bash_tool.execute(command=_shell_command("ls /nonexistent_directory_12345", "Get-ChildItem 'nonexistent_directory_12345'"))
 
     assert not result.success
     assert result.exit_code != 0
@@ -56,7 +81,7 @@ async def test_command_timeout():
     print("\n=== Testing Command Timeout ===")
 
     bash_tool = BashTool()
-    result = await bash_tool.execute(command="sleep 10", timeout=1)
+    result = await bash_tool.execute(command=_sleep_command(10), timeout=1)
 
     assert not result.success
     assert "timed out" in result.error.lower()
@@ -71,7 +96,7 @@ async def test_background_command():
 
     bash_tool = BashTool()
     result = await bash_tool.execute(
-        command="for i in 1 2 3; do echo 'Line '$i; sleep 0.5; done", run_in_background=True
+        command=_loop_command("Line", 3, delay_ms=500), run_in_background=True
     )
 
     assert result.success
@@ -107,7 +132,7 @@ async def test_bash_output_monitoring():
 
     # Start background command
     result = await bash_tool.execute(
-        command="for i in 1 2 3 4 5; do echo 'Line '$i; sleep 0.5; done", run_in_background=True
+        command=_loop_command("Line", 5, delay_ms=500), run_in_background=True
     )
 
     assert result.success
@@ -138,7 +163,7 @@ async def test_bash_output_with_filter():
 
     # Start background command
     result = await bash_tool.execute(
-        command="for i in 1 2 3 4 5; do echo 'Line '$i; sleep 0.3; done", run_in_background=True
+        command=_loop_command("Line", 5, delay_ms=300), run_in_background=True
     )
 
     assert result.success
@@ -168,7 +193,7 @@ async def test_bash_kill():
     bash_tool = BashTool()
 
     # Start a long-running background command
-    result = await bash_tool.execute(command="sleep 100", run_in_background=True)
+    result = await bash_tool.execute(command=_sleep_command(100), run_in_background=True)
 
     assert result.success
     bash_id = result.bash_id
@@ -231,7 +256,7 @@ async def test_multiple_background_commands():
     bash_ids = []
     for i in range(3):
         result = await bash_tool.execute(
-            command=f"for j in 1 2 3; do echo 'Command {i + 1} Line '$j; sleep 0.5; done", run_in_background=True
+            command=_loop_command(f"Command {i + 1} Line", 3, delay_ms=500), run_in_background=True
         )
         assert result.success
         bash_ids.append(result.bash_id)
@@ -255,6 +280,20 @@ async def test_multiple_background_commands():
 
 
 @pytest.mark.asyncio
+async def test_background_shell_cleanup_all():
+    """Test global cleanup for any lingering background shells."""
+    bash_tool = BashTool()
+
+    result = await bash_tool.execute(command=_sleep_command(100), run_in_background=True)
+
+    assert result.success
+    cleaned = await BackgroundShellManager.cleanup_all()
+
+    assert cleaned >= 1
+    assert BackgroundShellManager.get(result.bash_id) is None
+
+
+@pytest.mark.asyncio
 async def test_timeout_validation():
     """Test timeout parameter validation."""
     print("\n=== Testing Timeout Validation ===")
@@ -262,11 +301,11 @@ async def test_timeout_validation():
     bash_tool = BashTool()
 
     # Test with timeout > 600 (should be capped to 600)
-    result = await bash_tool.execute(command="echo 'test'", timeout=1000)
+    result = await bash_tool.execute(command=_shell_command("echo 'test'", "Write-Output 'test'"), timeout=1000)
     assert result.success
     print("Timeout > 600 handled correctly")
 
     # Test with timeout < 1 (should be set to 120)
-    result = await bash_tool.execute(command="echo 'test'", timeout=0)
+    result = await bash_tool.execute(command=_shell_command("echo 'test'", "Write-Output 'test'"), timeout=0)
     assert result.success
     print("Timeout < 1 handled correctly")

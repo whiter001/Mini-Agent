@@ -1,7 +1,7 @@
 """Tools module."""
 
 from .base import Tool, ToolResult
-from .bash_tool import BashTool
+from .bash_tool import BashTool, ShellTool
 from .file_tools import EditTool, ReadTool, WriteTool
 from .memory_tools import RememberTool, RememberUserTool, SearchMemoryTool
 from .note_tool import RecallNoteTool, SessionNoteTool
@@ -13,6 +13,7 @@ __all__ = [
     "WriteTool",
     "EditTool",
     "BashTool",
+    "ShellTool",
     "RememberTool",
     "RememberUserTool",
     "SearchMemoryTool",

@@ -2,15 +2,17 @@
 
 import asyncio
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
-from typing import Optional
+from typing import Any, Optional
 
 import tiktoken
 
 from .llm import LLMClient
 from .logger import AgentLogger
 from .schema import Message
+from .tool_output import ToolOutputStore
 from .tools.base import Tool, ToolResult
 from .utils import calculate_display_width
 
@@ -42,6 +44,18 @@ class Colors:
     BRIGHT_WHITE = "\033[97m"
 
 
+ANCHOR_SUMMARY_PREFIX = "[Conversation Summary Anchor]"
+ROUND_SUMMARY_PREFIX = "[Assistant Execution Summary]"
+
+
+@dataclass
+class ConversationRound:
+    """A single user turn and the execution that followed it."""
+
+    user_message: Message
+    execution_messages: list[Message]
+
+
 class Agent:
     """Single agent with basic tools and MCP support."""
 
@@ -53,11 +67,13 @@ class Agent:
         max_steps: int = 100,
         workspace_dir: str = "./workspace",
         token_limit: int = 160000,  # Leave safe headroom below MiniMax-M2.7's 204,800-token context window.
+        summary_recent_rounds: int = 2,
     ):
         self.llm = llm_client
         self.tools = {tool.name: tool for tool in tools}
         self.max_steps = max_steps
         self.token_limit = token_limit
+        self.summary_recent_rounds = max(summary_recent_rounds, 0)
         self.workspace_dir = Path(workspace_dir)
         self._ephemeral_messages: list[Message] = []
         # Cancellation event for interrupting agent execution (set externally, e.g., by Esc key)
@@ -78,6 +94,7 @@ class Agent:
 
         # Initialize logger
         self.logger = AgentLogger()
+        self.tool_output_store = ToolOutputStore(self.workspace_dir)
 
         # Token usage from last API response (updated after each LLM call)
         self.api_total_tokens: int = 0
@@ -190,14 +207,236 @@ class Agent:
         # Rough estimation: average 2.5 characters = 1 token
         return int(total_chars / 2.5)
 
-    async def _summarize_messages(self):
-        """Message history summarization: summarize conversations between user messages when tokens exceed limit
+    @staticmethod
+    def _stringify_message_content(content: str | list[dict[str, Any]] | Any) -> str:
+        """Convert message content into a readable string."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict):
+                    if "text" in block:
+                        parts.append(str(block["text"]))
+                    elif "content" in block:
+                        parts.append(str(block["content"]))
+                    else:
+                        parts.append(str(block))
+                else:
+                    parts.append(str(block))
+            return "\n".join(part for part in parts if part)
+        return str(content)
 
-        Strategy (Agent mode):
-        - Keep all user messages (these are user intents)
-        - Summarize content between each user-user pair (agent execution process)
-        - If last round is still executing (has agent/tool messages but no next user), also summarize
-        - Structure: system -> user1 -> summary1 -> user2 -> summary2 -> user3 -> summary3 (if executing)
+    @staticmethod
+    def _truncate_text(text: str, max_chars: int) -> str:
+        """Trim verbose text while keeping enough detail for summaries."""
+        normalized = " ".join(text.split())
+        if len(normalized) <= max_chars:
+            return normalized
+        return normalized[: max_chars - 3] + "..."
+
+    def _is_summary_artifact(self, message: Message) -> bool:
+        """Return True when the message is an internal summary artifact."""
+        if message.role != "user" or not isinstance(message.content, str):
+            return False
+        stripped = message.content.lstrip()
+        return stripped.startswith(ANCHOR_SUMMARY_PREFIX) or stripped.startswith(ROUND_SUMMARY_PREFIX)
+
+    def _is_anchor_summary_message(self, message: Message) -> bool:
+        """Return True when the message is the rolling conversation anchor."""
+        return message.role == "user" and isinstance(message.content, str) and message.content.lstrip().startswith(ANCHOR_SUMMARY_PREFIX)
+
+    def _extract_summary_body(self, message: Message, prefix: str | None = None) -> str:
+        """Extract the body text from an internal summary message."""
+        content = self._stringify_message_content(message.content).strip()
+        if prefix and content.startswith(prefix):
+            return content[len(prefix) :].lstrip()
+        for candidate in (ANCHOR_SUMMARY_PREFIX, ROUND_SUMMARY_PREFIX):
+            if content.startswith(candidate):
+                return content[len(candidate) :].lstrip()
+        return content
+
+    def _build_anchor_message(self, anchor_text: str) -> Message:
+        """Create the rolling anchor summary message."""
+        return Message(role="user", content=f"{ANCHOR_SUMMARY_PREFIX}\n\n{anchor_text}")
+
+    def _build_round_summary_message(self, summary_text: str) -> Message:
+        """Create a compact execution summary for the current round."""
+        return Message(role="user", content=f"{ROUND_SUMMARY_PREFIX}\n\n{summary_text}")
+
+    def _collect_conversation_rounds(self) -> tuple[str, list[ConversationRound]]:
+        """Split message history into archived anchor + actual user rounds."""
+        existing_anchor = ""
+        working_messages = self.messages[1:]
+
+        if working_messages and self._is_anchor_summary_message(working_messages[0]):
+            existing_anchor = self._extract_summary_body(working_messages[0], prefix=ANCHOR_SUMMARY_PREFIX)
+            working_messages = working_messages[1:]
+
+        user_indices = [
+            index
+            for index, message in enumerate(working_messages)
+            if message.role == "user" and not self._is_summary_artifact(message)
+        ]
+
+        rounds: list[ConversationRound] = []
+        for offset, user_idx in enumerate(user_indices):
+            next_user_idx = user_indices[offset + 1] if offset + 1 < len(user_indices) else len(working_messages)
+            rounds.append(
+                ConversationRound(
+                    user_message=working_messages[user_idx],
+                    execution_messages=working_messages[user_idx + 1 : next_user_idx],
+                )
+            )
+
+        return existing_anchor, rounds
+
+    def _collect_turn_trace(self, turn_messages: list[Message]) -> list[dict[str, str]]:
+        """Match tool results back to their originating calls for summary generation."""
+        trace: list[dict[str, str]] = []
+        pending_indices: list[int] = []
+        pending_by_call_id: dict[str, list[int]] = {}
+
+        for message in turn_messages:
+            if message.role == "assistant":
+                tool_calls = message.tool_calls or []
+                for call in tool_calls:
+                    arguments = call.function.arguments if isinstance(call.function.arguments, dict) else {}
+                    formatted_args = ", ".join(
+                        f"{key}={self._truncate_text(self._stringify_message_content(value), 60)}"
+                        for key, value in list(arguments.items())[:3]
+                    )
+                    trace.append(
+                        {
+                            "name": call.function.name,
+                            "arguments": formatted_args,
+                            "result": "",
+                        }
+                    )
+                    index = len(trace) - 1
+                    pending_indices.append(index)
+                    if call.id:
+                        pending_by_call_id.setdefault(call.id, []).append(index)
+                continue
+
+            if message.role != "tool" or not trace:
+                continue
+
+            result_text = self._stringify_message_content(message.content).strip()
+            if not result_text:
+                continue
+
+            trace_index: int | None = None
+            if message.tool_call_id:
+                matching_indices = pending_by_call_id.get(message.tool_call_id) or []
+                if matching_indices:
+                    trace_index = matching_indices.pop(0)
+
+            if trace_index is None and pending_indices:
+                while pending_indices and trace[pending_indices[0]]["result"]:
+                    pending_indices.pop(0)
+                if pending_indices:
+                    trace_index = pending_indices.pop(0)
+
+            if trace_index is not None and not trace[trace_index]["result"]:
+                trace[trace_index]["result"] = result_text
+
+        return trace
+
+    def _render_round_digest(self, round_data: ConversationRound, round_num: int) -> str:
+        """Render a compact, structured digest for an archived round."""
+        user_request = self._truncate_text(self._stringify_message_content(round_data.user_message.content), 240)
+        lines = [f"Round {round_num}", f"User request: {user_request}"]
+
+        trace = self._collect_turn_trace(round_data.execution_messages)
+        if trace:
+            lines.append("Tool trace:")
+            for step in trace[:8]:
+                args = f" ({step['arguments']})" if step["arguments"] else ""
+                result = self._truncate_text(step["result"] or "(no recorded tool result)", 180)
+                lines.append(f"- {step['name']}{args}: {result}")
+
+        final_assistant = ""
+        for message in reversed(round_data.execution_messages):
+            if message.role == "assistant":
+                final_assistant = self._stringify_message_content(message.content).strip()
+                if final_assistant:
+                    break
+            elif self._is_summary_artifact(message):
+                final_assistant = self._extract_summary_body(message)
+                if final_assistant:
+                    break
+
+        if final_assistant:
+            lines.append(f"Final assistant result: {self._truncate_text(final_assistant, 240)}")
+
+        return "\n".join(lines)
+
+    async def _create_anchor_summary(self, existing_anchor: str, archived_rounds: list[ConversationRound]) -> str:
+        """Merge older rounds into a rolling summary anchor."""
+        if not archived_rounds:
+            return existing_anchor.strip()
+
+        archived_text = "\n\n".join(
+            self._render_round_digest(round_data, index + 1)
+            for index, round_data in enumerate(archived_rounds)
+        )
+
+        try:
+            summary_prompt = f"""You maintain a rolling conversation summary anchor for a coding-agent session.
+
+Existing anchor summary:
+{existing_anchor.strip() or "(none)"}
+
+Older rounds to merge:
+{archived_text}
+
+Return an updated anchor summary with these sections:
+- User goals and constraints
+- Work completed and verified outcomes
+- Important artifacts (files, commands, identifiers)
+- Open issues / next steps
+
+Requirements:
+1. Preserve durable facts, decisions, and verified results.
+2. Mention exact filenames, symbols, and commands when they matter.
+3. Omit verbose tool output and transient logs.
+4. Keep it concise, factual, and under 1200 words.
+5. Do not invent information."""
+
+            response = await self.llm.generate(
+                messages=[
+                    Message(
+                        role="system",
+                        content="You maintain concise rolling summaries for long coding-agent conversations.",
+                    ),
+                    Message(role="user", content=summary_prompt),
+                ]
+            )
+
+            summary_text = self._stringify_message_content(response.content).strip()
+            if summary_text:
+                print(f"{Colors.BRIGHT_GREEN}✓ Updated rolling conversation anchor{Colors.RESET}")
+                return summary_text
+        except Exception as e:
+            print(f"{Colors.BRIGHT_RED}✗ Anchor summary generation failed: {e}{Colors.RESET}")
+
+        fallback_sections: list[str] = []
+        if existing_anchor.strip():
+            fallback_sections.append(f"Previous anchor:\n{existing_anchor.strip()}")
+        fallback_sections.extend(
+            self._render_round_digest(round_data, index + 1)
+            for index, round_data in enumerate(archived_rounds)
+        )
+        return "\n\n".join(fallback_sections).strip()
+
+    async def _summarize_messages(self):
+        """Compact message history when the context window gets too large.
+
+        Strategy:
+        - Merge older rounds into a single rolling anchor summary.
+        - Keep the most recent N rounds verbatim when possible.
+        - If there is only one round left, replace its execution trace with a compact round summary.
 
         Summary is triggered when EITHER:
         - Local token estimation exceeds limit
@@ -222,45 +461,48 @@ class Agent:
         )
         print(f"{Colors.BRIGHT_YELLOW}🔄 Triggering message history summarization...{Colors.RESET}")
 
-        # Find all user message indices (skip system prompt)
-        user_indices = [i for i, msg in enumerate(self.messages) if msg.role == "user" and i > 0]
+        existing_anchor, conversation_rounds = self._collect_conversation_rounds()
 
-        # Need at least 1 user message to perform summary
-        if len(user_indices) < 1:
+        if not conversation_rounds:
             print(f"{Colors.BRIGHT_YELLOW}⚠️  Insufficient messages, cannot summarize{Colors.RESET}")
             return
 
-        # Build new message list
-        new_messages = [self.messages[0]]  # Keep system prompt
-        summary_count = 0
+        new_messages = [self.messages[0]]
+        anchor_in_use = False
+        retained_rounds = 0
 
-        # Iterate through each user message and summarize the execution process after it
-        for i, user_idx in enumerate(user_indices):
-            # Add current user message
-            new_messages.append(self.messages[user_idx])
+        if len(conversation_rounds) == 1:
+            round_data = conversation_rounds[0]
+            summary_text = await self._create_summary(round_data.execution_messages, 1)
+            if not summary_text:
+                print(f"{Colors.BRIGHT_YELLOW}⚠️  Current round has nothing to summarize{Colors.RESET}")
+                return
 
-            # Determine message range to summarize
-            # If last user, go to end of message list; otherwise to before next user
-            if i < len(user_indices) - 1:
-                next_user_idx = user_indices[i + 1]
+            if existing_anchor.strip():
+                new_messages.append(self._build_anchor_message(existing_anchor.strip()))
+                anchor_in_use = True
+            new_messages.append(round_data.user_message)
+            new_messages.append(self._build_round_summary_message(summary_text))
+            retained_rounds = 1
+        else:
+            if len(conversation_rounds) > self.summary_recent_rounds:
+                raw_recent_rounds = conversation_rounds[-self.summary_recent_rounds :] if self.summary_recent_rounds > 0 else []
+                archived_rounds = conversation_rounds[: len(conversation_rounds) - len(raw_recent_rounds)]
             else:
-                next_user_idx = len(self.messages)
+                raw_recent_rounds = conversation_rounds[-1:]
+                archived_rounds = conversation_rounds[:-1]
 
-            # Extract execution messages for this round
-            execution_messages = self.messages[user_idx + 1 : next_user_idx]
+            anchor_text = await self._create_anchor_summary(existing_anchor, archived_rounds)
+            if anchor_text:
+                new_messages.append(self._build_anchor_message(anchor_text))
+                anchor_in_use = True
 
-            # If there are execution messages in this round, summarize them
-            if execution_messages:
-                summary_text = await self._create_summary(execution_messages, i + 1)
-                if summary_text:
-                    summary_message = Message(
-                        role="user",
-                        content=f"[Assistant Execution Summary]\n\n{summary_text}",
-                    )
-                    new_messages.append(summary_message)
-                    summary_count += 1
+            for round_data in raw_recent_rounds:
+                new_messages.append(round_data.user_message)
+                new_messages.extend(round_data.execution_messages)
 
-        # Replace message list
+            retained_rounds = len(raw_recent_rounds)
+
         self.messages = new_messages
 
         # Skip next token check to avoid consecutive summary triggers
@@ -269,7 +511,12 @@ class Agent:
 
         new_tokens = self._estimate_tokens()
         print(f"{Colors.BRIGHT_GREEN}✓ Summary completed, local tokens: {estimated_tokens} → {new_tokens}{Colors.RESET}")
-        print(f"{Colors.DIM}  Structure: system + {len(user_indices)} user messages + {summary_count} summaries{Colors.RESET}")
+        structure_parts = []
+        if anchor_in_use:
+            structure_parts.append("rolling anchor")
+        if retained_rounds:
+            structure_parts.append(f"{retained_rounds} recent round(s)")
+        print(f"{Colors.DIM}  Structure: system + {' + '.join(structure_parts) if structure_parts else 'compressed history'}{Colors.RESET}")
         print(f"{Colors.DIM}  Note: API token count will update on next LLM call{Colors.RESET}")
 
     async def _create_summary(self, messages: list[Message], round_num: int) -> str:
@@ -487,28 +734,40 @@ Requirements:
                             error=f"Tool execution failed: {error_detail}\n\nTraceback:\n{error_trace}",
                         )
 
+                prepared_content = self.tool_output_store.prepare(
+                    result.content,
+                    label=f"{function_name} output",
+                )
+                prepared_error = (
+                    self.tool_output_store.prepare(result.error, label=f"{function_name} error")
+                    if result.error
+                    else None
+                )
+                tool_result_content = prepared_content.preview
+                tool_result_error = prepared_error.preview if prepared_error else result.error
+
                 # Log tool execution result
                 self.logger.log_tool_result(
                     tool_name=function_name,
                     arguments=arguments,
                     result_success=result.success,
-                    result_content=result.content if result.success else None,
-                    result_error=result.error if not result.success else None,
+                    result_content=tool_result_content if result.success else None,
+                    result_error=tool_result_error if not result.success else None,
                 )
 
                 # Print result
                 if result.success:
-                    result_text = result.content
+                    result_text = tool_result_content
                     if len(result_text) > 300:
                         result_text = result_text[:300] + f"{Colors.DIM}...{Colors.RESET}"
                     print(f"{Colors.BRIGHT_GREEN}✓ Result:{Colors.RESET} {result_text}")
                 else:
-                    print(f"{Colors.BRIGHT_RED}✗ Error:{Colors.RESET} {Colors.RED}{result.error}{Colors.RESET}")
+                    print(f"{Colors.BRIGHT_RED}✗ Error:{Colors.RESET} {Colors.RED}{tool_result_error}{Colors.RESET}")
 
                 # Add tool result message
                 tool_msg = Message(
                     role="tool",
-                    content=result.content if result.success else f"Error: {result.error}",
+                    content=tool_result_content if result.success else f"Error: {tool_result_error}",
                     tool_call_id=tool_call_id,
                     name=function_name,
                 )
@@ -535,3 +794,9 @@ Requirements:
     def get_history(self) -> list[Message]:
         """Get message history."""
         return self.messages.copy()
+
+    async def cleanup(self) -> None:
+        """Release runtime resources that may outlive the last turn on Windows."""
+        from .tools.bash_tool import cleanup_background_shells
+
+        await cleanup_background_shells()

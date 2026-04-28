@@ -1,12 +1,17 @@
 """Test cases for tools."""
 
 import asyncio
+import platform
 import tempfile
 from pathlib import Path
 
 import pytest
 
 from mini_agent.tools import BashTool, EditTool, ReadTool, WriteTool
+
+
+def _shell_command(unix: str, windows: str) -> str:
+    return windows if platform.system() == "Windows" else unix
 
 
 @pytest.mark.asyncio
@@ -80,7 +85,7 @@ async def test_bash_tool():
     tool = BashTool()
 
     # Test successful command
-    result = await tool.execute(command="echo 'Hello from bash'")
+    result = await tool.execute(command=_shell_command("echo 'Hello from bash'", "Write-Output 'Hello from bash'"))
     assert result.success, f"Bash failed: {result.error}"
     assert "Hello from bash" in result.content, f"Output mismatch: {result.content}"
     print("✅ BashTool test passed")

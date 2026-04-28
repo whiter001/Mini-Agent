@@ -15,6 +15,18 @@ from pydantic import Field, model_validator
 from .base import Tool, ToolResult
 
 
+async def _close_process_transport(process: "asyncio.subprocess.Process") -> None:
+    """Explicitly close the underlying subprocess transport on Windows-friendly paths."""
+    transport = getattr(process, "_transport", None)
+    if transport is None:
+        return
+
+    try:
+        transport.close()
+    except Exception:
+        pass
+
+
 class BashOutputResult(ToolResult):
     """Bash command execution result with separated stdout and stderr.
 
@@ -95,14 +107,36 @@ class BackgroundShell:
 
     async def terminate(self):
         """Terminate the background process."""
-        if self.process.returncode is None:
-            self.process.terminate()
+        was_running = self.process.returncode is None
+
+        try:
+            if was_running:
+                self.process.terminate()
+
             try:
-                await asyncio.wait_for(self.process.wait(), timeout=5)
+                stdout, _ = await asyncio.wait_for(self.process.communicate(), timeout=5)
             except asyncio.TimeoutError:
                 self.process.kill()
-        self.status = "terminated"
-        self.exit_code = self.process.returncode
+                stdout, _ = await asyncio.wait_for(self.process.communicate(), timeout=5)
+
+            if stdout:
+                for line in stdout.decode("utf-8", errors="replace").splitlines():
+                    self.add_output(line)
+        except ProcessLookupError:
+            pass
+        except Exception:
+            try:
+                await self.process.wait()
+            except Exception:
+                pass
+        finally:
+            await _close_process_transport(self.process)
+
+        if was_running:
+            self.status = "terminated"
+            self.exit_code = self.process.returncode
+        else:
+            self.update_status(is_alive=False, exit_code=self.process.returncode)
 
 
 class BackgroundShellManager:
@@ -179,13 +213,22 @@ class BackgroundShellManager:
         cls._monitor_tasks[bash_id] = task
 
     @classmethod
-    def _cancel_monitor(cls, bash_id: str) -> None:
+    async def _cancel_monitor(cls, bash_id: str) -> None:
         """Cancel and remove a monitoring task (internal use only)."""
-        if bash_id in cls._monitor_tasks:
-            task = cls._monitor_tasks[bash_id]
-            if not task.done():
-                task.cancel()
-            del cls._monitor_tasks[bash_id]
+        task = cls._monitor_tasks.pop(bash_id, None)
+        if task is None:
+            return
+
+        if task.done():
+            return
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
 
     @classmethod
     async def terminate(cls, bash_id: str) -> BackgroundShell:
@@ -204,14 +247,36 @@ class BackgroundShellManager:
         if not shell:
             raise ValueError(f"Shell not found: {bash_id}")
 
+        # Stop monitoring before draining pipes to avoid concurrent reads.
+        await cls._cancel_monitor(bash_id)
+
         # Terminate the process
         await shell.terminate()
 
         # Clean up monitoring and remove from manager
-        cls._cancel_monitor(bash_id)
         cls._remove(bash_id)
 
         return shell
+
+    @classmethod
+    async def cleanup_all(cls) -> int:
+        """Terminate and remove every tracked background shell."""
+        bash_ids = list(cls._shells.keys())
+
+        for bash_id in bash_ids:
+            shell = cls._shells.get(bash_id)
+            if shell is None:
+                continue
+
+            await cls._cancel_monitor(bash_id)
+            try:
+                await shell.terminate()
+            except Exception:
+                pass
+            finally:
+                cls._remove(bash_id)
+
+        return len(bash_ids)
 
 
 class BashTool(Tool):
@@ -234,6 +299,36 @@ class BashTool(Tool):
         self.shell_name = "PowerShell" if self.is_windows else "bash"
         self.workspace_dir = workspace_dir
 
+    def _build_subprocess_command(self, command: str) -> tuple[list[str] | str, bool]:
+        """Build the subprocess invocation for the current platform shell."""
+        if self.is_windows:
+            return ["powershell.exe", "-NoProfile", "-Command", command], False
+        return command, True
+
+    async def _create_process(
+        self,
+        command: str,
+        *,
+        stdout,
+        stderr,
+    ) -> "asyncio.subprocess.Process":
+        """Create a subprocess using the current platform shell."""
+        shell_cmd, use_shell = self._build_subprocess_command(command)
+        if use_shell:
+            return await asyncio.create_subprocess_shell(
+                shell_cmd,
+                stdout=stdout,
+                stderr=stderr,
+                cwd=self.workspace_dir,
+            )
+
+        return await asyncio.create_subprocess_exec(
+            *shell_cmd,
+            stdout=stdout,
+            stderr=stderr,
+            cwd=self.workspace_dir,
+        )
+
     @property
     def name(self) -> str:
         return "bash"
@@ -241,7 +336,9 @@ class BashTool(Tool):
     @property
     def description(self) -> str:
         shell_examples = {
-            "Windows": """Execute PowerShell commands in foreground or background.
+            "Windows": """Execute shell commands in the current platform shell.
+
+On Windows this tool runs commands via PowerShell. The tool name remains `bash` for backward compatibility.
 
 For terminal operations like git, npm, docker, etc. DO NOT use for file operations - use specialized tools.
 
@@ -260,7 +357,9 @@ Examples:
   - git status
   - npm test
   - python -m http.server 8080 (with run_in_background=true)""",
-            "Unix": """Execute bash commands in foreground or background.
+            "Unix": """Execute shell commands in the current platform shell.
+
+On Unix-like systems this tool runs commands via bash. The tool name remains `bash` for backward compatibility.
 
 For terminal operations like git, npm, docker, etc. DO NOT use for file operations - use specialized tools.
 
@@ -330,32 +429,29 @@ Examples:
             elif timeout < 1:
                 timeout = 120
 
-            # Prepare shell-specific command execution
-            if self.is_windows:
-                # Windows: Use PowerShell with appropriate encoding
-                shell_cmd = ["powershell.exe", "-NoProfile", "-Command", command]
-            else:
-                # Unix/Linux/macOS: Use bash
-                shell_cmd = command
-
             if run_in_background:
                 # Background execution: Create isolated process
                 bash_id = str(uuid.uuid4())[:8]
 
                 # Start background process with combined stdout/stderr
-                if self.is_windows:
-                    process = await asyncio.create_subprocess_exec(
-                        *shell_cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.STDOUT,
-                        cwd=self.workspace_dir,
-                    )
-                else:
-                    process = await asyncio.create_subprocess_shell(
-                        shell_cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.STDOUT,
-                        cwd=self.workspace_dir,
+                process = await self._create_process(
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+
+                # If the process exits immediately, treat it as a startup failure.
+                await asyncio.sleep(0.05)
+                if process.returncode not in (None, 0):
+                    stdout, _ = await process.communicate()
+                    await _close_process_transport(process)
+                    stderr_text = stdout.decode("utf-8", errors="replace")
+                    return BashOutputResult(
+                        success=False,
+                        error=f"Command failed to start in {self.shell_name} (exit code {process.returncode})",
+                        stdout="",
+                        stderr=stderr_text,
+                        exit_code=process.returncode,
                     )
 
                 # Create background shell and add to manager
@@ -380,25 +476,24 @@ Examples:
 
             else:
                 # Foreground execution: Create isolated process
-                if self.is_windows:
-                    process = await asyncio.create_subprocess_exec(
-                        *shell_cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=self.workspace_dir,
-                    )
-                else:
-                    process = await asyncio.create_subprocess_shell(
-                        shell_cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=self.workspace_dir,
-                    )
+                process = await self._create_process(
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
 
                 try:
                     stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
                 except asyncio.TimeoutError:
                     process.kill()
+                    try:
+                        await process.communicate()
+                    except Exception:
+                        try:
+                            await process.wait()
+                        except Exception:
+                            pass
+                    await _close_process_transport(process)
                     error_msg = f"Command timed out after {timeout} seconds"
                     return BashOutputResult(
                         success=False,
@@ -407,6 +502,8 @@ Examples:
                         stderr=error_msg,
                         exit_code=-1,
                     )
+
+                await _close_process_transport(process)
 
                 # Decode output
                 stdout_text = stdout.decode("utf-8", errors="replace")
@@ -615,3 +712,12 @@ class BashKillTool(Tool):
                 stderr=str(e),
                 exit_code=-1,
             )
+
+
+class ShellTool(BashTool):
+    """Compatibility alias with a clearer name for platform-native shell execution."""
+
+
+async def cleanup_background_shells() -> int:
+    """Terminate all tracked background shell processes and release their transports."""
+    return await BackgroundShellManager.cleanup_all()

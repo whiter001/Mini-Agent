@@ -11,7 +11,7 @@ from mini_agent import LLMClient
 from mini_agent.agent import Agent
 from mini_agent.config import Config
 from mini_agent.tools import BashTool, EditTool, ReadTool, WriteTool
-from mini_agent.tools.mcp_loader import load_mcp_tools_async
+from mini_agent.tools.mcp_loader import cleanup_mcp_connections, load_mcp_tools_async
 from mini_agent.tools.note_tool import RecallNoteTool, SessionNoteTool
 
 
@@ -94,29 +94,33 @@ async def test_basic_agent_usage():
             workspace_dir=workspace_dir,
         )
 
-        # Task: Create a Python file with hello world
-        task = """
-        Create a Python file named hello.py in the workspace that prints "Hello, Mini Agent!".
-        Then execute it to verify it works.
-        """
+        try:
+            # Task: Create a Python file with hello world
+            task = """
+            Create a Python file named hello.py in the workspace that prints "Hello, Mini Agent!".
+            Then execute it to verify it works.
+            """
 
-        print(f"\nTask: {task}")
-        print("\n" + "=" * 80 + "\n")
+            print(f"\nTask: {task}")
+            print("\n" + "=" * 80 + "\n")
 
-        agent.add_user_message(task)
-        result = await agent.run()
+            agent.add_user_message(task)
+            result = await agent.run()
 
-        print("\n" + "=" * 80)
-        print(f"Result: {result}")
-        print("=" * 80)
+            print("\n" + "=" * 80)
+            print(f"Result: {result}")
+            print("=" * 80)
 
-        # Verify the file was created or task completed
-        hello_file = Path(workspace_dir) / "hello.py"
-        assert hello_file.exists() or "complete" in result.lower(), (
-            "Agent should create the file or indicate completion"
-        )
+            # Verify the file was created or task completed
+            hello_file = Path(workspace_dir) / "hello.py"
+            assert hello_file.exists() or "complete" in result.lower(), (
+                "Agent should create the file or indicate completion"
+            )
 
-        print("\n✅ Basic agent usage test passed")
+            print("\n✅ Basic agent usage test passed")
+        finally:
+            await agent.cleanup()
+            await cleanup_mcp_connections()
 
 
 @pytest.mark.asyncio
@@ -176,69 +180,76 @@ You have record_note and recall_notes tools:
             workspace_dir=workspace_dir,
         )
 
-        # Task 1: First conversation - agent should save memories
-        task1 = """
-        Please remember these details about me:
-        - Name: Alex
-        - Project: mini-agent
-        - Tech stack: Python 3.12, async/await
-        - Preference: concise code style
-        
-        Use record_note to save this information.
-        """
+        agent2: Agent | None = None
+        try:
+            # Task 1: First conversation - agent should save memories
+            task1 = """
+            Please remember these details about me:
+            - Name: Alex
+            - Project: mini-agent
+            - Tech stack: Python 3.12, async/await
+            - Preference: concise code style
+            
+            Use record_note to save this information.
+            """
 
-        print(f"\n📌 First Conversation:\n{task1}")
-        print("=" * 80)
+            print(f"\n📌 First Conversation:\n{task1}")
+            print("=" * 80)
 
-        agent.add_user_message(task1)
-        result1 = await agent.run()
+            agent.add_user_message(task1)
+            result1 = await agent.run()
 
-        print("\n" + "=" * 80)
-        print(f"Agent completed: {result1[:200]}...")
-        print("=" * 80)
+            print("\n" + "=" * 80)
+            print(f"Agent completed: {result1[:200]}...")
+            print("=" * 80)
 
-        # Check if notes were recorded
-        if memory_file.exists():
-            notes = json.loads(memory_file.read_text())
-            print(f"\n✅ Agent recorded {len(notes)} notes:")
-            for note in notes:
-                print(f"  - [{note['category']}] {note['content']}")
-            assert len(notes) > 0, "Agent should have recorded some notes"
-        else:
-            print("\n⚠️  No notes found - agent may not have used record_note tool")
+            # Check if notes were recorded
+            if memory_file.exists():
+                notes = json.loads(memory_file.read_text())
+                print(f"\n✅ Agent recorded {len(notes)} notes:")
+                for note in notes:
+                    print(f"  - [{note['category']}] {note['content']}")
+                assert len(notes) > 0, "Agent should have recorded some notes"
+            else:
+                print("\n⚠️  No notes found - agent may not have used record_note tool")
 
-        print("\n\n" + "=" * 80)
-        print("Simulating New Session (Agent should recall previous information)")
-        print("=" * 80)
+            print("\n\n" + "=" * 80)
+            print("Simulating New Session (Agent should recall previous information)")
+            print("=" * 80)
 
-        # Task 2: New conversation - agent should recall memories
-        agent2 = Agent(
-            llm_client=llm_client,
-            system_prompt=system_prompt,
-            tools=tools,
-            max_steps=5,  # Reduced from 10
-            workspace_dir=workspace_dir,
-        )
+            # Task 2: New conversation - agent should recall memories
+            agent2 = Agent(
+                llm_client=llm_client,
+                system_prompt=system_prompt,
+                tools=tools,
+                max_steps=5,  # Reduced from 10
+                workspace_dir=workspace_dir,
+            )
 
-        task2 = """
-        Use recall_notes to check: What do you know about me and my project?
-        """
+            task2 = """
+            Use recall_notes to check: What do you know about me and my project?
+            """
 
-        print(f"\n📌 Second Conversation (new session):\n{task2}")
-        print("=" * 80)
+            print(f"\n📌 Second Conversation (new session):\n{task2}")
+            print("=" * 80)
 
-        agent2.add_user_message(task2)
-        result2 = await agent2.run()
+            agent2.add_user_message(task2)
+            result2 = await agent2.run()
 
-        print("\n" + "=" * 80)
-        print(f"Agent response: {result2}")
-        print("=" * 80)
+            print("\n" + "=" * 80)
+            print(f"Agent response: {result2}")
+            print("=" * 80)
 
-        print("\n✅ Session Note Tool test completed!")
-        print("\nKey Points Verified:")
-        print("  1. Agent can record important information")
-        print("  2. Notes persist in memory file")
-        print("  3. New agent instances can recall previous notes")
+            print("\n✅ Session Note Tool test completed!")
+            print("\nKey Points Verified:")
+            print("  1. Agent can record important information")
+            print("  2. Notes persist in memory file")
+            print("  3. New agent instances can recall previous notes")
+        finally:
+            await agent.cleanup()
+            if agent2 is not None:
+                await agent2.cleanup()
+            await cleanup_mcp_connections()
 
 
 async def main():
