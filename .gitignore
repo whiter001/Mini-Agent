@@ -19,12 +19,34 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+pip-wheel-metadata/
+
+# Python tooling caches and reports
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyre/
+.pytype/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+pytestdebug.log
 
 # Virtual environments
 venv/
 ENV/
 env/
-.venv
+.venv/
+.python-version
+
+# Node / browser tooling
+node_modules/
+playwright-report/
+test-results/
 
 # IDE
 .vscode/
@@ -57,7 +79,6 @@ mcp.json.bak
 docs/assets/backup/
 docs/assets/preview.html
 
-CLAUDE.md
-
+.mini-agent/
 .agent_memory.json
 .playwright-mcp/
