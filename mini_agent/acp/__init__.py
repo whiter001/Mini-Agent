@@ -148,7 +148,8 @@ class MiniMaxACPAgent:
 
     async def _run_turn(self, state: SessionState, session_id: str) -> tuple[str, str]:
         agent = state.agent
-        for _ in range(agent.max_steps):
+        step = 0
+        while agent.max_steps is None or step < agent.max_steps:
             if state.cancelled:
                 return "cancelled", "Task cancelled by user."
             tool_schemas = [tool.to_schema() for tool in agent.tools.values()]
@@ -185,6 +186,7 @@ class MiniMaxACPAgent:
                         status, text = "failed", f"[ERROR] Tool error: {exc}"
                 await self._send(session_id, update_tool_call(call.id, status=status, content=[tool_content(text_block(text))], raw_output=text))
                 agent.messages.append(Message(role="tool", content=text, tool_call_id=call.id, name=name))
+            step += 1
         return "max_turn_requests", f"Task couldn't be completed after {agent.max_steps} steps."
 
     async def _send(self, session_id: str, update: Any) -> None:

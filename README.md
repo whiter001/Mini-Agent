@@ -190,7 +190,7 @@ api_key: "YOUR_API_KEY_HERE" # API Key from step 1
 api_base: "https://api.minimax.io" # Global
 # api_base: "https://api.minimaxi.com"  # China
 model: "MiniMax-M2.7"
-max_steps: 100
+# max_steps: 100  # Optional: omit to let the agent keep running until you stop it manually
 workspace_dir: "./workspace"
 ```
 

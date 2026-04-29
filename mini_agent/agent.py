@@ -64,7 +64,7 @@ class Agent:
         llm_client: LLMClient,
         system_prompt: str,
         tools: list[Tool],
-        max_steps: int = 100,
+        max_steps: int | None = None,
         workspace_dir: str = "./workspace",
         token_limit: int = 160000,  # Leave safe headroom below MiniMax-M2.7's 204,800-token context window.
         summary_recent_rounds: int = 2,
@@ -579,7 +579,7 @@ Requirements:
             return summary_content
 
     async def run(self, cancel_event: Optional[asyncio.Event] = None) -> str:
-        """Execute agent loop until task is complete or max steps reached.
+        """Execute agent loop until task completes, is cancelled, or reaches an optional step limit.
 
         Args:
             cancel_event: Optional asyncio.Event that can be set to cancel execution.
@@ -600,7 +600,7 @@ Requirements:
         step = 0
         run_start_time = perf_counter()
 
-        while step < self.max_steps:
+        while self.max_steps is None or step < self.max_steps:
             # Check for cancellation at start of each step
             if self._check_cancelled():
                 self._cleanup_incomplete_messages()
@@ -614,7 +614,8 @@ Requirements:
 
             # Step header with proper width calculation
             BOX_WIDTH = 58
-            step_text = f"{Colors.BOLD}{Colors.BRIGHT_CYAN}💭 Step {step + 1}/{self.max_steps}{Colors.RESET}"
+            step_limit = str(self.max_steps) if self.max_steps is not None else "∞"
+            step_text = f"{Colors.BOLD}{Colors.BRIGHT_CYAN}💭 Step {step + 1}/{step_limit}{Colors.RESET}"
             step_display_width = calculate_display_width(step_text)
             padding = max(0, BOX_WIDTH - 1 - step_display_width)  # -1 for leading space
 

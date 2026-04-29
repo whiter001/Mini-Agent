@@ -190,7 +190,7 @@ api_key: "YOUR_API_KEY_HERE" # 填入第 1 步获取的 API Key
 api_base: "https://api.minimaxi.com" # 国内版
 # api_base: "https://api.minimax.io"  # 海外版（如使用海外平台，请修改此行）
 model: "MiniMax-M2.7"
-max_steps: 100
+# max_steps: 100  # 可选：省略后会持续运行，直到您手动停止
 workspace_dir: "./workspace"
 ```
 
