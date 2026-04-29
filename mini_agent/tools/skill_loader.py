@@ -244,14 +244,26 @@ class SkillLoader:
             host_parts = [part for part in parsed.netloc.lower().split(".") if part]
             path_parts = [part for part in self._TOKEN_SPLIT_PATTERN.split(parsed.path.lower()) if part]
 
-            for part in [*host_parts, *path_parts]:
-                for subtoken in self._TOKEN_PATTERN.findall(part):
-                    normalized = subtoken.lower().strip()
-                    if self._contains_han(normalized):
+            parts_with_kind = (
+                [(parsed.netloc.lower(), True)]
+                + [(part, True) for part in host_parts]
+                + [(part, False) for part in path_parts]
+            )
+
+            for part, is_host_token in parts_with_kind:
+                subtokens = self._expand_token(part)
+                if not is_host_token:
+                    subtokens = [part]
+
+                for subtoken in subtokens:
+                    normalized = subtoken.lower().strip(" ,.;:!?()[]{}<>\"'`")
+                    if not normalized or self._contains_han(normalized):
                         continue
-                    if len(normalized) <= 3 or normalized in self._URL_TOKEN_STOPWORDS:
+                    if normalized in self._URL_TOKEN_STOPWORDS:
                         continue
-                    tokens.extend(self._expand_token(normalized))
+                    if len(normalized) <= 3 and "." not in normalized:
+                        continue
+                    tokens.append(normalized)
 
         return self._unique_ordered_strings(tokens)
 
@@ -391,18 +403,33 @@ class SkillLoader:
 
         return [
             "### CLI Guardrails",
-            "- Bootstrap the session with supported commands such as `autobrowser.cmd server start` and `autobrowser.cmd connect`; do not use unsupported commands like `autobrowser.cmd start --headless`.",
-            "- Use supported navigation commands such as `autobrowser.cmd open <url>` or `autobrowser.cmd goto <url>`; do not assume an unsupported `autobrowser.cmd navigate` subcommand exists.",
+            "- Use the command name for the current shell: `autobrowser` on macOS/Linux and `autobrowser.cmd` on Windows.",
+            "- Bootstrap the session with supported commands such as `autobrowser server start` / `autobrowser connect` on macOS/Linux or `autobrowser.cmd server start` / `autobrowser.cmd connect` on Windows; do not use unsupported commands like `autobrowser start --headless` or `autobrowser.cmd start --headless`.",
+            "- Use supported navigation commands such as `autobrowser open <url>` or `autobrowser goto <url>`; do not assume an unsupported `autobrowser navigate` or `autobrowser.cmd navigate` subcommand exists.",
             "- Use one `find` strategy at a time, for example `find text \"我来答\"`; do not use `find role=text ...`.",
             "- `click` accepts a selector or a ref returned by `find`/`snapshot`; do not use `click --text ...`.",
-            "- Prefer `autobrowser.cmd wait ms <milliseconds>` for page waits; do not chain shell-level `timeout` commands into autobrowser calls on Windows.",
-            "- `scroll` expects an explicit selector and deltas; do not call `autobrowser.cmd scroll 500`. For page scrolling, prefer `autobrowser.cmd eval \"window.scrollBy(0, 500)\"` or pass a real selector such as `body`.",
-            "- For iframe-based rich-text editors (for example UEditor), select the real iframe with `autobrowser.cmd frame \".edui-editor-iframeholder iframe\"`, type into `body`, then switch back with `autobrowser.cmd frame top` before clicking the page-level submit button.",
+            "- Tab switching uses `tab select <handle>`; do not use a nonexistent `tab switch` subcommand.",
+            "- `eval` expects the script as a positional argument or via `--file` / `--stdin`; do not use an unsupported `--script` flag.",
+            "- Prefer `autobrowser wait ms <milliseconds>` for page waits; do not chain shell-level `timeout` commands into autobrowser calls on Windows.",
+            "- `scroll` expects an explicit selector and deltas; do not call `autobrowser scroll 500`. For page scrolling, prefer `autobrowser eval \"window.scrollBy(0, 500)\"` or pass a real selector such as `body`.",
+            "- For virtualized feeds such as x.com, do not treat a stable visible `article` count (for example 4 or 5) as proof that no more posts exist. The rendered posts can change while the DOM count stays flat. Scroll in steps, keep a `seen` map keyed by the `/status/` link or other stable post identifier, and accumulate unique posts across scroll iterations until `seen.size` reaches the target or stops growing after several passes.",
+            "- For x.com feed extraction, prefer one async `autobrowser eval` / `autobrowser eval --file` script that keeps `seen` across the whole loop, clicks `查看新帖子` when present, scrolls the `main` feed container before falling back to `window`, waits 1500-2200ms between passes, and returns the accumulated JSON once growth stalls. Do not restart `seen` from scratch in separate eval calls.",
+            "- For long x.com extraction scripts, prefer `write_file` + `autobrowser eval --file <path>` even on macOS/Linux. This avoids shell quoting breakage from nested quotes or `${...}` template expressions and is less likely to time out than repeatedly embedding a large async script inline.",
+            "- For iframe-based rich-text editors (for example UEditor), select the real iframe with `autobrowser frame \".edui-editor-iframeholder iframe\"`, type into `body`, then switch back with `autobrowser frame top` before clicking the page-level submit button.",
             "- Do not guess answer submit buttons with generic selectors like `[class*=submit]`; they can match unrelated feedback/report controls such as `accusation-btn-submit`. Prefer an exact answer-submit selector/text such as `.new-editor-deliver-btn` or a verified ref from `snapshot`.",
             "- In PowerShell, do not use heredoc or `<` / `>` redirection with `autobrowser.cmd eval`; prefer `write_file` + `autobrowser.cmd eval --file <path>` or a single quoted one-liner.",
             "- When you need eval output or editor-state checks, return the value directly instead of relying only on `console.log(...)`.",
             "- Verify submission with durable post-submit signals such as `location.href.includes(\"newAnswer=1\")`, a visible `我的回答` / `修改回答` block, or disappearance of the answer form; do not rely only on `提交成功` text.",
         ]
+
+    def _close_unmatched_code_fences(self, text: str) -> str:
+        """Close truncated fenced code blocks so later prompt sections stay readable."""
+        cleaned = text.rstrip()
+        if not cleaned:
+            return cleaned
+        if cleaned.count("```") % 2 == 1:
+            return f"{cleaned}\n```"
+        return cleaned
 
     def _parse_heading(self, line: str) -> tuple[str, int] | None:
         """Parse a markdown heading line into heading text and level."""
@@ -466,6 +493,8 @@ class SkillLoader:
         score += self._phrase_score(section.content, query.compact, 6)
         score += self._field_token_score(section.heading, query.tokens, 6)
         score += self._field_token_score(section.content, query.tokens, 2)
+        score += self._field_token_score(section.heading, query.url_tokens, 5)
+        score += self._field_token_score(section.content, query.url_tokens, 8)
         return score
 
     def _select_relevant_sections(
@@ -479,7 +508,7 @@ class SkillLoader:
             return []
         if max_sections <= 0:
             max_sections = 2
-        if not query.tokens:
+        if not query.tokens and not query.url_tokens:
             return self._first_populated_sections(skill.sections, max_sections)
 
         scored_sections: List[tuple[int, int, SkillSection]] = []
@@ -571,6 +600,7 @@ class SkillLoader:
             lines.append("\n".join(guardrails))
 
         excerpt, truncated = self._build_relevant_excerpt(skill, query, max_content_chars=max_content_chars)
+        excerpt = self._close_unmatched_code_fences(excerpt)
         if excerpt:
             lines.append(excerpt)
         if truncated:
@@ -879,6 +909,9 @@ class SkillLoader:
             "High-risk auto-generated skills may be omitted from this startup summary; use `list_skills` to inspect them manually when needed.\n"
         )
         prompt_parts.append("Load a skill's full content using the appropriate skill tool when needed.\n")
+        prompt_parts.append(
+            "Only call `get_skill` for a skill name that appears in this summary or in `list_skills`; do not infer skill names from tool or CLI names alone.\n"
+        )
 
         # List all skills with their descriptions
         for skill in visible_skills:

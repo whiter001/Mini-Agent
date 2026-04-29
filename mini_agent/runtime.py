@@ -43,6 +43,21 @@ class RuntimeContext:
     memory_store: MemoryStore | None = None
 
 
+def inject_optional_prompt_block(system_prompt: str, block: str, *, placeholder: str) -> str:
+    """Inject a prompt block by replacing a placeholder or appending as a fallback."""
+    if placeholder in system_prompt:
+        return system_prompt.replace(placeholder, block or "")
+
+    if not block:
+        return system_prompt
+
+    stripped_prompt = system_prompt.rstrip()
+    if not stripped_prompt:
+        return block
+
+    return f"{stripped_prompt}\n\n{block}"
+
+
 async def build_runtime_context(
     workspace_dir: Path,
     *,
@@ -134,13 +149,15 @@ async def build_runtime_context(
 
     if skill_loader:
         skills_metadata = skill_loader.get_skills_metadata_prompt()
+        system_prompt = inject_optional_prompt_block(
+            system_prompt,
+            skills_metadata,
+            placeholder="{SKILLS_METADATA}",
+        )
         if skills_metadata:
-            system_prompt = system_prompt.replace("{SKILLS_METADATA}", skills_metadata)
             print(f"{Colors.GREEN}✅ Injected {len(skill_loader.loaded_skills)} skills metadata into system prompt{Colors.RESET}")
-        else:
-            system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
     else:
-        system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
+        system_prompt = inject_optional_prompt_block(system_prompt, "", placeholder="{SKILLS_METADATA}")
 
     if memory_store:
         memory_prompt = memory_store.build_system_prompt()

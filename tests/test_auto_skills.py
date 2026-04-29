@@ -11,7 +11,7 @@ from mini_agent.agent import Agent
 from mini_agent.cli import build_turn_context
 from mini_agent.config import ToolsConfig
 from mini_agent.schema import FunctionCall, Message, ToolCall
-from mini_agent.tools.auto_skill import _collect_turn_trace, build_auto_skill_context, cleanup_auto_skills, maybe_create_auto_skill
+from mini_agent.tools.auto_skill import _collect_turn_trace, _merge_guidance_lists, _normalize_string_list, _summarize_final_outcome, build_auto_skill_context, cleanup_auto_skills, maybe_create_auto_skill
 from mini_agent.tools.skill_loader import SkillLoader
 
 
@@ -214,6 +214,30 @@ def test_select_relevant_skills_ignores_generic_url_fragment_noise():
         assert [skill.name for skill in selected] == ["autobrowser"]
 
 
+def test_normalize_string_list_preserves_sentence_items_with_commas():
+    """Sentence-style notes should stay intact when reloading existing auto-skill metadata."""
+    assert _normalize_string_list("bash, write_file") == ["bash", "write_file"]
+    assert _normalize_string_list(
+        "Inspect the current state first, then act; avoid editing or submitting before you confirm the real target."
+    ) == ["Inspect the current state first, then act; avoid editing or submitting before you confirm the real target."]
+
+
+def test_summarize_final_outcome_keeps_reusable_lead_paragraph_only():
+    """Long enumerated outcomes should collapse to a short reusable success summary."""
+    final_result = (
+        "成功获取了 **11 条消息**！以下是 https://x.com/home 中的 **10 条消息**：\n\n"
+        "### 1. 用户A\n"
+        "> 很长的正文\n\n"
+        "### 2. 用户B\n"
+        "> 另一条正文"
+    )
+
+    summary = _summarize_final_outcome(final_result, max_chars=220)
+
+    assert summary == "成功获取了 **11 条消息**！以下是 https:/<path> 中的 **10 条消息**："
+    assert "### 1." not in summary
+
+
 def test_select_relevant_skills_can_still_use_distinctive_url_host_tokens():
     """Distinctive host tokens from a URL should still help site-specific skills match."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -245,6 +269,43 @@ def test_select_relevant_skills_can_still_use_distinctive_url_host_tokens():
         )
 
         assert [skill.name for skill in selected] == ["github"]
+
+
+def test_auto_skill_prompt_uses_short_url_host_tokens_for_section_selection():
+    """Short hosts like x.com should still pull in the most relevant extraction section."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        browser_dir = Path(tmpdir) / "autobrowser"
+        browser_dir.mkdir()
+        create_test_skill(
+            browser_dir,
+            "autobrowser",
+            "Autobrowser workflow helper",
+            """# Overview
+
+Use this skill to drive autobrowser from the CLI.
+
+## Run
+
+Use autobrowser on Unix and autobrowser.cmd on Windows.
+
+## Feed Extraction
+
+For https://x.com/home, keep a seen map keyed by /status/ links across viewport swaps and accumulate unique posts across scroll iterations.
+""",
+            metadata="tools:\n  - autobrowser\n",
+        )
+
+        loader = SkillLoader(tmpdir)
+        loader.discover_skills()
+
+        prompt = loader.get_auto_skills_prompt(
+            "执行 autobrowser help,用 autobrowser 获取https://x.com/home 里的 10 条消息",
+            max_skills=1,
+            max_content_chars=600,
+        )
+
+        assert "https://x.com/home" in prompt
+        assert "seen map keyed by /status/ links across viewport swaps" in prompt
 
 
 def test_build_auto_skill_context_returns_system_message():
@@ -328,17 +389,61 @@ def test_auto_skill_prompt_adds_autobrowser_guardrails():
         prompt = loader.get_auto_skills_prompt("用autobrowser打开页面并回答问题", max_skills=1)
 
         assert "CLI Guardrails" in prompt
+        assert "autobrowser` on macOS/Linux and `autobrowser.cmd` on Windows" in prompt
         assert "start --headless" in prompt
         assert "navigate" in prompt
         assert "find text \"我来答\"" in prompt
         assert "click --text" in prompt
+        assert "tab select <handle>" in prompt
+        assert "--script" in prompt
         assert "wait ms" in prompt
         assert "scroll 500" in prompt
+        assert "do not treat a stable visible `article` count (for example 4 or 5) as proof that no more posts exist" in prompt
+        assert "`seen` map keyed by the `/status/` link" in prompt
+        assert "accumulate unique posts across scroll iterations" in prompt
+        assert "clicks `查看新帖子` when present" in prompt
+        assert "Do not restart `seen` from scratch in separate eval calls" in prompt
+        assert "prefer `write_file` + `autobrowser eval --file <path>` even on macOS/Linux" in prompt
         assert ".edui-editor-iframeholder iframe" in prompt
         assert ".new-editor-deliver-btn" in prompt
         assert "newAnswer=1" in prompt
         assert "[class*=submit]" in prompt
         assert "eval --file" in prompt
+
+
+def test_auto_skill_prompt_closes_truncated_code_fences():
+    """Truncated auto-loaded skill excerpts should not leave fenced code blocks open."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        browser_dir = Path(tmpdir) / "autobrowser"
+        browser_dir.mkdir()
+        create_test_skill(
+            browser_dir,
+            "autobrowser",
+            "Autobrowser workflow helper",
+            """## Run
+
+```bash
+autobrowser help
+autobrowser goto https://x.com/home
+"""
+            + ("autobrowser eval \"window.scrollBy(0, 500)\"\n" * 120)
+            + """
+```
+
+## Troubleshooting
+
+If fewer than ten tweets are visible, scroll and retry.
+""",
+            metadata="tools:\n  - autobrowser\n",
+        )
+
+        loader = SkillLoader(tmpdir)
+        loader.discover_skills()
+
+        prompt = loader.get_auto_skills_prompt("用autobrowser抓取x.com里的10条消息", max_skills=1, max_content_chars=400)
+
+        assert "use get_skill for the full version" in prompt.lower()
+        assert prompt.count("```") % 2 == 0
 
 
 def test_build_turn_context_respects_auto_skill_toggle():
@@ -527,6 +632,67 @@ def test_auto_skill_creation_updates_existing_skill_when_content_changes():
         discovered = fresh_loader.discover_skills()
 
         assert [skill.name for skill in discovered] == [first.skill_name]
+
+
+def test_merge_guidance_lists_prefers_request_specific_x_workflow_entries():
+    """Request-aware guidance merging should prefer more specific x.com workflow entries over generic duplicates."""
+    merged = _merge_guidance_lists(
+        [
+            "Inspect the current state, constraints, and true target before committing to any action.",
+            "Execute the main task through the verified tool path and keep the successful sequence stable.",
+            "Validate the final state with a separate check that proves the user goal was actually achieved.",
+        ],
+        [
+            "Reuse an existing x.com/home tab or open the feed, then confirm the target timeline is active before extracting.",
+            "Start with a simple visible-post extraction from `article` nodes to see whether the target count is already available.",
+            "Use a single extraction path that collects visible posts, dedupes by stable /status/ links, and returns structured JSON.",
+            "Validate that at least the requested number of unique posts were returned before summarizing the result.",
+        ],
+        "执行 autobrowser help,用 autobrowser 获取https://x.com/home 里的 10 条消息",
+        kind="workflow",
+        limit=6,
+    )
+
+    assert "Reuse an existing x.com/home tab or open the feed, then confirm the target timeline is active before extracting." in merged
+    assert "Start with a simple visible-post extraction from `article` nodes to see whether the target count is already available." in merged
+    assert "Validate that at least the requested number of unique posts were returned before summarizing the result." in merged
+    assert "Use a single extraction path that collects visible posts, dedupes by stable /status/ links, and returns structured JSON." not in merged
+    assert "Inspect the current state, constraints, and true target before committing to any action." not in merged
+    assert "Execute the main task through the verified tool path and keep the successful sequence stable." not in merged
+
+
+def test_auto_skill_creation_adds_x_feed_specific_guidance():
+    """Generated x.com feed auto skills should include the cheaper visible-extract-first workflow."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        skill_dir = Path(tmpdir) / "skills"
+        loader = SkillLoader(str(skill_dir))
+        turn_messages = build_turn_messages(
+            "执行 autobrowser help,用 autobrowser 获取https://x.com/home 里的 10 条消息",
+            [
+                ("bash", {"command": "autobrowser help"}, "Showed help output."),
+                ("bash", {"command": "autobrowser server start"}, "Background command started with ID: 123456."),
+                ("bash", {"command": "autobrowser status"}, "Connected successfully."),
+                ("bash", {"command": "autobrowser tab select t24"}, "Selected x.com/home tab."),
+                ("bash", {"command": "autobrowser eval visible-articles"}, "Returned 10 structured feed items."),
+            ],
+        )
+
+        result = maybe_create_auto_skill(
+            loader,
+            turn_messages,
+            "成功获取了 X.com 首页的 **10 条消息**，以下是整理后的内容：\n\n### 1️⃣ @servasyy_ai\n> 最全面的Codex教程！",
+            auto_skill_dir=str(skill_dir),
+        )
+
+        assert result.created is True
+        assert result.skill_path is not None
+
+        loaded_skill = loader.load_skill(result.skill_path)
+
+        assert loaded_skill is not None
+        assert "Start with a simple visible-post extraction from `article` nodes" in loaded_skill.content
+        assert "If the initial visible extract is short, switch to one file-backed scrolling/dedupe script" in loaded_skill.content
+        assert "Prefer write_file plus autobrowser eval --file for any fallback script" in loaded_skill.content
 
 
 def test_auto_skill_creation_uses_semantic_name_for_new_skill():
@@ -854,6 +1020,33 @@ def test_auto_skill_creation_rejects_partial_completion_when_requested_count_not
         assert result.reason == "quality-gate"
         assert "partial-completion-detected" in result.quality_warnings
         assert "requirement-mismatch" in result.quality_warnings
+
+
+def test_auto_skill_creation_accepts_success_summary_with_numbered_results():
+    """Detailed numbered results should not be misread as only one completed item."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        skill_dir = Path(tmpdir) / "skills"
+        loader = SkillLoader(str(skill_dir))
+        turn_messages = build_turn_messages(
+            "执行 autobrowser help,用 autobrowser 获取https://x.com/home 里的 10 条消息",
+            [
+                ("bash", {"command": "autobrowser help"}, "Showed help output."),
+                ("bash", {"command": "autobrowser server start"}, "Background command started with ID: 123456."),
+                ("bash", {"command": "autobrowser status"}, "Connected successfully."),
+                ("bash", {"command": "autobrowser tab select t24"}, "Selected x.com/home tab."),
+                ("bash", {"command": "autobrowser eval articles"}, "Returned 10 structured feed items."),
+            ],
+        )
+
+        result = maybe_create_auto_skill(
+            loader,
+            turn_messages,
+            "成功获取了 X.com 首页的 **10 条消息**，以下是整理后的内容：\n\n---\n\n### 1️⃣ @servasyy_ai\n**4月28日**\n> 最全面的Codex教程！不到两小时教会你如何使用 Codex App + GPT5.5...\n\n---\n\n### 2️⃣ @PandaTalk8\n**9小时前**\n> 我算是真的孔乙己脱下了长衫...",
+            auto_skill_dir=str(skill_dir),
+        )
+
+        assert result.created is True
+        assert "requirement-mismatch" not in result.quality_warnings
 
 
 def test_auto_skill_creation_rejects_multilingual_failure_summary():

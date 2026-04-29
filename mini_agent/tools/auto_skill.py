@@ -242,9 +242,26 @@ _WINDOWS_PATH_PATTERN = re.compile(r"[A-Za-z]:\\(?:[^\\/:*?\"<>|\r\n]+\\)*[^\\/:
 _UNIX_PATH_PATTERN = re.compile(r"(?<![A-Za-z0-9_])/(?:[^/\s]+/)*[^/\s]+")
 _TIMESTAMP_PATTERN = re.compile(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\b")
 _ID_PATTERN = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b", re.IGNORECASE)
+_SIMPLE_COMMA_LIST_ITEM_PATTERN = re.compile(r"^[A-Za-z0-9_./:+#<>-]+$")
 _MIN_FINAL_OUTCOME_CHARS = 24
 _SKILL_FRONTMATTER_PATTERN = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.DOTALL)
 _NUMERIC_SUFFIX_PATTERN = re.compile(r"^(?P<base>.+)-(?P<suffix>\d+)$")
+_GUIDANCE_BUCKET_RULES: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
+    "decision": (
+        ("inspect", ("inspect ",)),
+        ("tool-path", ("prefer the proven tool path", "prefer write_file plus autobrowser eval --file", "prefer write_file")),
+        ("extract", ("for x.com feed requests, start with the cheapest visible `article` extraction",)),
+        ("count", ("for count-based requests",)),
+        ("recovery", ("when a step fails",)),
+        ("validate", ("keep validation", "add an explicit verification", "finish with a post-action verification", "validate ")),
+    ),
+    "workflow": (
+        ("inspect", ("inspect ", "reuse an existing x.com/home tab")),
+        ("extract", ("execute the main task through", "start with a simple visible-post extraction", "use a single extraction path")),
+        ("recovery", ("if a step fails", "if the initial visible extract is short", "if the first pass is short")),
+        ("validate", ("validate ", "finish with a post-action verification")),
+    ),
+}
 _AUTO_SKILL_BLOCKING_WARNINGS = {
     "environment-specific-data-detected",
     "multiple-failed-steps",
@@ -763,8 +780,9 @@ def _extract_limited_result_count(text: str) -> int | None:
 
 def _analyze_completion_gap(user_request: str, final_result: str) -> dict[str, Any]:
     requested_count = _extract_requested_count(user_request)
-    reported_count = _extract_limited_result_count(final_result)
-    lowered_result = final_result.lower()
+    result_summary = _summarize_final_outcome(final_result, max_chars=320)
+    reported_count = _extract_limited_result_count(result_summary)
+    lowered_result = result_summary.lower()
     partial_completion = bool(requested_count and any(marker in lowered_result for marker in _PARTIAL_COMPLETION_MARKERS))
 
     requirement_mismatch = False
@@ -905,8 +923,14 @@ def _normalize_string_list(value: object) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
-        items = [part.strip() for part in value.split(",")] if "," in value else [value.strip()]
-        return [item for item in _dedupe(items) if item]
+        text = value.strip()
+        if not text:
+            return []
+        if "," in text:
+            items = [part.strip() for part in text.split(",")]
+            if all(item and _SIMPLE_COMMA_LIST_ITEM_PATTERN.fullmatch(item) for item in items):
+                return [item for item in _dedupe(items) if item]
+        return [text]
     if isinstance(value, (list, tuple, set)):
         items: list[str] = []
         for entry in value:
@@ -1045,6 +1069,126 @@ def _build_skill_name(user_request: str, trace: Sequence[dict[str, Any]]) -> str
     return _build_legacy_skill_name(user_request, trace)
 
 
+def _is_autobrowser_x_feed_request(user_request: str) -> bool:
+    lowered_request = user_request.lower()
+    if "autobrowser" not in lowered_request:
+        return False
+
+    site_labels = set(_infer_site_labels(user_request))
+    if not ({"x", "twitter"} & site_labels or "x.com" in lowered_request or "twitter.com" in lowered_request):
+        return False
+
+    return any(marker in user_request for marker in ("消息", "推文", "帖子", "动态")) or _extract_requested_count(user_request) is not None
+
+
+def _guidance_request_keywords(user_request: str) -> list[str]:
+    keywords: list[str] = []
+    keywords.extend(_infer_request_labels(user_request))
+    keywords.extend(_infer_site_labels(user_request))
+    keywords.extend(_extract_ascii_request_tokens(user_request))
+
+    lowered_request = user_request.lower()
+    if "x.com" in lowered_request:
+        keywords.append("x.com")
+    if "twitter.com" in lowered_request:
+        keywords.append("twitter.com")
+    if "autobrowser" in lowered_request:
+        keywords.append("autobrowser")
+
+    return _dedupe([keyword for keyword in keywords if keyword])
+
+
+def _guidance_specificity_score(item: str, request_keywords: Sequence[str]) -> int:
+    lowered_item = item.lower()
+    overlap_score = sum(1 for keyword in request_keywords if keyword and keyword in lowered_item)
+    structured_score = sum(
+        1
+        for marker in (
+            "x.com",
+            "x.com/home",
+            "autobrowser",
+            "/status/",
+            "article",
+            "eval --file",
+            "write_file",
+            "structured json",
+            "requested number",
+            "unique posts",
+            "查看新帖子",
+            "scrolling/dedupe",
+        )
+        if marker in lowered_item
+    )
+    token_score = len(re.findall(r"[A-Za-z0-9]+", lowered_item))
+    phrase_bonus = 0
+    if "start with a simple visible-post extraction" in lowered_item or "cheapest visible `article` extraction" in lowered_item:
+        phrase_bonus += 20
+    if "validate that at least the requested number of unique posts" in lowered_item:
+        phrase_bonus += 20
+    return overlap_score * 8 + structured_score * 4 + min(token_score, 24) + phrase_bonus
+
+
+def _guidance_bucket(item: str, kind: str) -> str | None:
+    lowered_item = item.lower()
+    for bucket_name, markers in _GUIDANCE_BUCKET_RULES.get(kind, ()):
+        if any(lowered_item.startswith(marker) for marker in markers):
+            return bucket_name
+    return None
+
+
+def _merge_guidance_lists(
+    primary_items: Sequence[str],
+    existing_items: Sequence[str],
+    user_request: str,
+    *,
+    kind: str,
+    limit: int | None = None,
+) -> list[str]:
+    merged = _merge_string_lists(primary_items, existing_items)
+    bucket_rules = _GUIDANCE_BUCKET_RULES.get(kind)
+    if not merged or not bucket_rules:
+        return merged[:limit] if limit is not None else merged
+
+    request_keywords = _guidance_request_keywords(user_request)
+    bucket_winners: dict[str, tuple[int, int, str]] = {}
+    extras: list[tuple[int, str]] = []
+
+    for index, item in enumerate(merged):
+        bucket_name = _guidance_bucket(item, kind)
+        if bucket_name is None:
+            extras.append((index, item))
+            continue
+
+        score = _guidance_specificity_score(item, request_keywords)
+        current = bucket_winners.get(bucket_name)
+        if current is None or score > current[0] or (score == current[0] and index < current[1]):
+            bucket_winners[bucket_name] = (score, index, item)
+
+    items: list[str] = []
+    seen: set[str] = set()
+    for bucket_name, _markers in bucket_rules:
+        winner = bucket_winners.get(bucket_name)
+        if winner is None:
+            continue
+        item = winner[2]
+        if item in seen:
+            continue
+        seen.add(item)
+        items.append(item)
+        if limit is not None and len(items) >= limit:
+            return items
+
+    for _index, item in extras:
+        if item in seen:
+            continue
+        seen.add(item)
+        items.append(item)
+        if limit is not None and len(items) >= limit:
+            return items
+
+    return items
+
+
 def _build_decision_notes(
     user_request: str,
     trace: Sequence[dict[str, Any]],
@@ -1059,6 +1203,9 @@ def _build_decision_notes(
         notes.append("Inspect the current state first, then act; avoid editing or submitting before you confirm the real target.")
     if tool_names:
         notes.append(f"Prefer the proven tool path ({', '.join(tool_names[:4])}) instead of switching approaches mid-task without evidence.")
+    if _is_autobrowser_x_feed_request(user_request):
+        notes.append("For x.com feed requests, start with the cheapest visible `article` extraction and only switch to file-backed scrolling/dedupe when the first pass is short.")
+        notes.append("Prefer write_file plus autobrowser eval --file for any fallback script that needs scrolling or dedupe state.")
     if metrics.get("recovered"):
         notes.append("When a step fails, read the tool output and repair the current path before inventing a brand-new workflow.")
     if metrics.get("requested_count"):
@@ -1084,6 +1231,10 @@ def _build_workflow_outline(
 
     if "discovery" in categories:
         outline.append("Inspect the current state, constraints, and true target before committing to any action.")
+    if _is_autobrowser_x_feed_request(user_request):
+        outline.append("Reuse an existing x.com/home tab or open the feed, then confirm the target timeline is active before extracting.")
+        outline.append("Start with a simple visible-post extraction from `article` nodes to see whether the target count is already available.")
+        outline.append("If the initial visible extract is short, switch to one file-backed scrolling/dedupe script that accumulates unique `/status/` links across passes instead of spawning new ad-hoc scripts each retry.")
     if metrics.get("task_kind") == "answering":
         outline.append("Open the real answering entry point, draft the content in the verified editor, and keep the interaction focused on that flow.")
         outline.append("Confirm a durable submission signal instead of assuming that opening the editor or clicking a button already finished the task.")
@@ -1095,6 +1246,8 @@ def _build_workflow_outline(
         outline.append("Validate the final state with a separate check that proves the user goal was actually achieved.")
     else:
         outline.append("Finish with a post-action verification step that checks the resulting state instead of trusting the first success message.")
+    if _is_autobrowser_x_feed_request(user_request):
+        outline.append("Validate that at least the requested number of unique posts were returned before summarizing the result.")
 
     if not outline:
         outline = [
@@ -1117,6 +1270,9 @@ def _build_watchouts(
         watchouts.append(
             "Opening a question page or reading existing answers does not count as answering unless authoring and submission signals are observed."
         )
+    if _is_autobrowser_x_feed_request(user_request):
+        watchouts.append("Do not jump straight to multi-pass scrolling when the visible `article` list already satisfies the requested count.")
+        watchouts.append("If fallback scrolling is needed, keep one file-backed script and one dedupe state keyed by `/status/` links; multiple script variants increase retries and tool calls.")
     if "validation" not in categories:
         watchouts.append("Without a post-action verification step, the workflow can drift even when tool calls look successful.")
     if not watchouts:
@@ -1149,7 +1305,7 @@ def _load_existing_auto_skill_knowledge(skill_file: Path | None) -> _AutoSkillKn
         workflow_outline=_normalize_string_list(auto_skill_meta.get("workflow_outline")),
         watchouts=_normalize_string_list(auto_skill_meta.get("watchouts")),
         legacy_family_keys=_normalize_string_list(auto_skill_meta.get("legacy_family_keys")),
-        latest_outcome=_sanitize_multiline_text(auto_skill_meta.get("latest_outcome") or "", max_chars=320),
+        latest_outcome=_summarize_final_outcome(auto_skill_meta.get("latest_outcome") or "", max_chars=220),
         run_count=_safe_int(auto_skill_meta.get("run_count")),
     )
 
@@ -1188,14 +1344,18 @@ def _build_skill_markdown(
         knowledge.observed_requests,
         limit=5,
     )
-    decision_notes = _merge_string_lists(
+    decision_notes = _merge_guidance_lists(
         _build_decision_notes(user_request, trace, quality),
         knowledge.decision_notes,
+        user_request,
+        kind="decision",
         limit=6,
     )
-    workflow_outline = _merge_string_lists(
+    workflow_outline = _merge_guidance_lists(
         _build_workflow_outline(user_request, quality),
         knowledge.workflow_outline,
+        user_request,
+        kind="workflow",
         limit=6,
     )
     watchouts = _merge_string_lists(
@@ -1203,7 +1363,7 @@ def _build_skill_markdown(
         knowledge.watchouts,
         limit=6,
     )
-    latest_outcome = _sanitize_multiline_text(final_result, max_chars=320)
+    latest_outcome = _summarize_final_outcome(final_result, max_chars=220)
     run_count = max(knowledge.run_count, 0) + 1
     all_legacy_family_keys = _merge_string_lists(list(legacy_family_keys), knowledge.legacy_family_keys, limit=10)
     frontmatter = {
@@ -1687,6 +1847,19 @@ def _sanitize_summary_text(text: str, *, max_chars: int) -> str:
     cleaned = _sanitize_multiline_text(text, max_chars=max_chars)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
+
+
+def _summarize_final_outcome(text: str, *, max_chars: int) -> str:
+    cleaned = _sanitize_multiline_text(text, max_chars=max(max_chars * 4, max_chars))
+    if not cleaned:
+        return ""
+
+    paragraphs = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", cleaned) if paragraph.strip()]
+    summary = paragraphs[0] if paragraphs else cleaned.strip()
+    summary = re.sub(r"\s+", " ", summary).strip()
+    if len(summary) > max_chars:
+        summary = summary[: max_chars - 3].rstrip() + "..."
+    return summary
 
 
 def _sanitize_multiline_text(text: str, *, max_chars: int) -> str:

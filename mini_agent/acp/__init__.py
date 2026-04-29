@@ -36,6 +36,7 @@ from mini_agent.cli import add_workspace_tools, build_turn_context, initialize_b
 from mini_agent.config import Config
 from mini_agent.llm import LLMClient
 from mini_agent.retry import RetryConfig as RetryConfigBase
+from mini_agent.runtime import inject_optional_prompt_block
 from mini_agent.schema import Message
 from mini_agent.tools.skill_loader import SkillLoader
 
@@ -205,8 +206,11 @@ async def run_acp_server(config: Config | None = None) -> None:
         system_prompt = "You are a helpful AI assistant."
     if skill_loader:
         meta = skill_loader.get_skills_metadata_prompt()
-        if meta:
-            system_prompt = f"{system_prompt.rstrip()}\n\n{meta}"
+        system_prompt = inject_optional_prompt_block(
+            system_prompt,
+            meta,
+            placeholder="{SKILLS_METADATA}",
+        )
     if memory_store:
         memory_prompt = memory_store.build_system_prompt()
         if memory_prompt:

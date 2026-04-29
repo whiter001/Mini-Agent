@@ -239,6 +239,7 @@ Even more content to make this realistic.
 
         # Should contain Progressive Disclosure explanation
         assert "Available Skills" in metadata_prompt
+        assert "Only call `get_skill` for a skill name that appears in this summary or in `list_skills`" in metadata_prompt
 
         # Should NOT contain full content (only metadata)
         assert "Detailed Skill Content" not in metadata_prompt
