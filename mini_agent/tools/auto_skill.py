@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
+from urllib.parse import urlparse
 
 import yaml
 
@@ -30,6 +31,23 @@ _STOPWORDS = {
     "the",
     "to",
     "with",
+}
+_URL_TOKEN_STOPWORDS = {
+    "http",
+    "https",
+    "www",
+    "com",
+    "cn",
+    "net",
+    "org",
+    "io",
+    "co",
+    "question",
+    "questions",
+    "page",
+    "pages",
+    "html",
+    "htm",
 }
 _CANDIDATE_DIRNAME = "_candidates"
 _ARCHIVED_DIRNAME = "_archived"
@@ -217,7 +235,10 @@ _EXISTING_ANSWER_SUMMARY_MARKERS = (
     "already answered",
     "existing answer",
 )
-_WINDOWS_PATH_PATTERN = re.compile(r"[A-Za-z]:\\(?:[^\\/:*?\"<>|\r\n]+\\)*[^\\/:*?\"<>|\r\n]*")
+_URL_PATTERN = re.compile(r"https?://[^\s)]+|www\.[^\s)]+", re.IGNORECASE)
+_NAME_TOKEN_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+|[A-Za-z0-9][A-Za-z0-9._/-]*")
+_NAME_TOKEN_SPLIT_PATTERN = re.compile(r"[._/-]+")
+_WINDOWS_PATH_PATTERN = re.compile(r"[A-Za-z]:\\(?:[^\\/:*?\"<>|\r\n]+\\)*[^\\/:*?\"<>|\r\n\s]*")
 _UNIX_PATH_PATTERN = re.compile(r"(?<![A-Za-z0-9_])/(?:[^/\s]+/)*[^/\s]+")
 _TIMESTAMP_PATTERN = re.compile(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\b")
 _ID_PATTERN = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b", re.IGNORECASE)
@@ -231,6 +252,35 @@ _AUTO_SKILL_BLOCKING_WARNINGS = {
     "requirement-mismatch",
     "incomplete-tool-results",
     "requested-action-not-observed",
+}
+_TASK_LABEL_RULES = (
+    ("answer", ("answer", "answering", "reply", "respond", "回答", "答题", "作答", "答复")),
+    ("review", ("review", "pull request", "code review", "审查", "评审", "复核")),
+    ("fix", ("fix", "repair", "debug", "troubleshoot", "修复", "排查", "故障")),
+    ("update", ("update", "edit", "modify", "更新", "修改", "编辑")),
+    ("create", ("create", "generate", "build", "生成", "创建", "新建")),
+    ("search", ("search", "find", "lookup", "搜索", "查找")),
+    ("test", ("test", "verify", "validate", "pytest", "测试", "验证", "校验")),
+)
+_SITE_LABEL_RULES = (
+    ("zhihu", ("zhihu", "zhihu.com", "知乎")),
+    ("baidu-zhidao", ("zhidao.baidu.com", "百度知道")),
+    ("github", ("github", "github.com")),
+    ("x", ("x.com", "twitter.com")),
+    ("slack", ("slack",)),
+    ("jira", ("jira",)),
+    ("notion", ("notion",)),
+)
+_WARNING_GUIDANCE = {
+    "environment-specific-data-detected": "Avoid hard-coding local paths, timestamps, run IDs, or other environment-specific data.",
+    "multiple-failed-steps": "When several steps fail, isolate the root cause before treating the whole trace as reusable guidance.",
+    "partial-completion-detected": "Do not treat a partially completed run as reusable until the requested scope is actually covered.",
+    "requirement-mismatch": "Compare the requested quantity or action with the observed result before reusing this workflow.",
+    "incomplete-tool-results": "Every critical tool call should have an observable result before the workflow is trusted.",
+    "requested-action-not-observed": "Browsing or reading is not enough when the user asked for a concrete action such as answering or publishing.",
+    "final-result-not-successful": "A polite summary can still describe failure; watch for blockers such as login, permissions, or anti-automation limits.",
+    "final-outcome-too-generic": "Record a concrete completion signal so the next run can verify the same outcome.",
+    "too-few-steps": "One-shot runs are usually too shallow to become durable guidance.",
 }
 
 
@@ -250,6 +300,7 @@ class AutoSkillCreationResult:
     skill_name: str = ""
     skill_path: Path | None = None
     reason: str = ""
+    write_mode: str = ""
     quality_score: int = 0
     tier: str = ""
     quality_reasons: list[str] = field(default_factory=list)
@@ -288,9 +339,22 @@ class _AutoSkillRecord:
     skill_name: str
     normalized_content: str
     family_key: str
+    aliases: set[str] = field(default_factory=set)
     score: int = 0
     warnings: set[str] = field(default_factory=set)
     generated_at: datetime | None = None
+
+
+@dataclass
+class _AutoSkillKnowledge:
+    observed_requests: list[str] = field(default_factory=list)
+    tools: list[str] = field(default_factory=list)
+    decision_notes: list[str] = field(default_factory=list)
+    workflow_outline: list[str] = field(default_factory=list)
+    watchouts: list[str] = field(default_factory=list)
+    legacy_family_keys: list[str] = field(default_factory=list)
+    latest_outcome: str = ""
+    run_count: int = 0
 
 
 def cleanup_auto_skills(
@@ -425,25 +489,49 @@ def maybe_create_auto_skill(
 
     trigger = "self-recovery" if quality.metrics.get("recovered") else "complex-task" if quality.metrics.get("meets_step_threshold") else "quality-gate"
     skill_name = _build_skill_name(user_request, trace)
-    skill_content = _build_skill_markdown(skill_name, user_request, trace, final_result, trigger, quality)
+    legacy_family_key = _build_legacy_skill_name(user_request, trace)
+    existing_record = _find_matching_auto_skill_record(auto_skill_dir, [skill_name, legacy_family_key])
+    resolved_tier = quality.tier
+    if existing_record is not None and existing_record.tier == "approved":
+        resolved_tier = "approved"
+
+    skill_content = _build_skill_markdown(
+        skill_name,
+        user_request,
+        trace,
+        final_result,
+        trigger,
+        quality,
+        family_key=skill_name,
+        legacy_family_keys=[legacy_family_key],
+        resolved_tier=resolved_tier,
+        existing_knowledge=_load_existing_auto_skill_knowledge(existing_record.skill_file if existing_record else None),
+    )
     if not _validate_generated_skill_content(skill_content):
         return AutoSkillCreationResult(
             created=False,
             reason="invalid-skill-content",
             quality_score=quality.score,
-            tier=quality.tier,
+            tier=resolved_tier,
             quality_reasons=quality.reasons,
             quality_warnings=quality.warnings,
         )
 
-    skill_path, resolved_skill_name = _write_skill(auto_skill_dir, skill_name, skill_content, quality.tier)
+    skill_path, resolved_skill_name, write_mode = _write_skill(
+        auto_skill_dir,
+        skill_name,
+        skill_content,
+        resolved_tier,
+        existing_record=existing_record,
+    )
     return AutoSkillCreationResult(
         created=True,
         skill_name=resolved_skill_name,
         skill_path=skill_path,
         reason=trigger,
+        write_mode=write_mode,
         quality_score=quality.score,
-        tier=quality.tier,
+        tier=resolved_tier,
         quality_reasons=quality.reasons,
         quality_warnings=quality.warnings,
     )
@@ -813,7 +901,123 @@ def _format_arguments(arguments: dict[str, object]) -> str:
     return ", ".join(items)
 
 
-def _build_skill_name(user_request: str, trace: Sequence[dict[str, Any]]) -> str:
+def _normalize_string_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = [part.strip() for part in value.split(",")] if "," in value else [value.strip()]
+        return [item for item in _dedupe(items) if item]
+    if isinstance(value, (list, tuple, set)):
+        items: list[str] = []
+        for entry in value:
+            items.extend(_normalize_string_list(entry))
+        return [item for item in _dedupe(items) if item]
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def _merge_string_lists(*collections: Sequence[str], limit: int | None = None) -> list[str]:
+    items: list[str] = []
+    seen: set[str] = set()
+    for collection in collections:
+        for value in collection:
+            text = str(value).strip()
+            key = text.lower()
+            if not text or key in seen:
+                continue
+            seen.add(key)
+            items.append(text)
+            if limit is not None and len(items) >= limit:
+                return items
+    return items
+
+
+def _safe_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _parse_skill_document(content: str) -> tuple[dict[str, Any], str] | None:
+    frontmatter_match = _SKILL_FRONTMATTER_PATTERN.match(content)
+    if not frontmatter_match:
+        return None
+    try:
+        frontmatter = yaml.safe_load(frontmatter_match.group(1)) or {}
+    except yaml.YAMLError:
+        return None
+    if not isinstance(frontmatter, dict):
+        return None
+    return frontmatter, frontmatter_match.group(2)
+
+
+def _contains_han(text: str) -> bool:
+    return any("\u3400" <= char <= "\u9fff" for char in text)
+
+
+def _expand_name_token(token: str) -> list[str]:
+    trimmed = token.strip().lower()
+    if not trimmed:
+        return []
+
+    items = [trimmed]
+    if _NAME_TOKEN_SPLIT_PATTERN.search(trimmed):
+        items.extend(part for part in _NAME_TOKEN_SPLIT_PATTERN.split(trimmed) if part)
+
+    if _contains_han(trimmed):
+        return items
+
+    return [item for item in _dedupe(items) if item and item not in _URL_TOKEN_STOPWORDS and len(item) > 2]
+
+
+def _extract_distinctive_url_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    for raw_url in _URL_PATTERN.findall(text):
+        candidate = raw_url if not raw_url.lower().startswith("www.") else f"https://{raw_url}"
+        parsed = urlparse(candidate)
+        host_parts = [part for part in parsed.netloc.lower().split(".") if part]
+        path_parts = [part for part in _NAME_TOKEN_SPLIT_PATTERN.split(parsed.path.lower()) if part]
+        for part in [*host_parts, *path_parts]:
+            tokens.extend(_expand_name_token(part))
+    return [item for item in _dedupe(tokens) if item and item not in _URL_TOKEN_STOPWORDS]
+
+
+def _extract_ascii_request_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    request_without_urls = _URL_PATTERN.sub(" ", text)
+    for match in _NAME_TOKEN_PATTERN.findall(request_without_urls.lower()):
+        if _contains_han(match):
+            continue
+        tokens.extend(_expand_name_token(match))
+    return [item for item in _dedupe(tokens) if item not in _STOPWORDS and item not in _URL_TOKEN_STOPWORDS]
+
+
+def _infer_request_labels(user_request: str) -> list[str]:
+    lowered_request = user_request.lower()
+    labels: list[str] = []
+    for label, markers in _TASK_LABEL_RULES:
+        if any(marker in lowered_request for marker in markers):
+            labels.append(label)
+    if _matches_any_pattern(lowered_request, _ANSWER_REQUEST_PATTERNS) and "answer" not in labels:
+        labels.insert(0, "answer")
+    return _dedupe(labels)
+
+
+def _infer_site_labels(user_request: str) -> list[str]:
+    lowered_request = user_request.lower()
+    labels: list[str] = []
+    url_tokens = _extract_distinctive_url_tokens(user_request)
+    for label, markers in _SITE_LABEL_RULES:
+        if any(marker in lowered_request for marker in markers) or any(marker in url_tokens for marker in markers):
+            labels.append(label)
+    for token in url_tokens:
+        if token in _URL_TOKEN_STOPWORDS or token in labels:
+            continue
+        labels.append(token)
+    return _dedupe(labels)
+
+
+def _build_legacy_skill_name(user_request: str, trace: Sequence[dict[str, Any]]) -> str:
     tokens = _tokenize(user_request)
     tool_names = _dedupe([str(step.get("name", "")) for step in trace if step.get("name")])
     parts = ["auto"]
@@ -823,6 +1027,141 @@ def _build_skill_name(user_request: str, trace: Sequence[dict[str, Any]]) -> str
     return slug[:80] or "auto-workflow"
 
 
+def _build_skill_name(user_request: str, trace: Sequence[dict[str, Any]]) -> str:
+    semantic_parts = ["auto"]
+    semantic_parts.extend(_infer_request_labels(user_request)[:2])
+    semantic_parts.extend(_infer_site_labels(user_request)[:2])
+
+    for token in _extract_ascii_request_tokens(user_request):
+        if token in semantic_parts:
+            continue
+        semantic_parts.append(token)
+        if len(semantic_parts) >= 6:
+            break
+
+    slug = _slugify("-".join(semantic_parts))
+    if slug and slug != "auto":
+        return slug[:80]
+    return _build_legacy_skill_name(user_request, trace)
+
+
+def _build_decision_notes(
+    user_request: str,
+    trace: Sequence[dict[str, Any]],
+    quality: AutoSkillQualityReport,
+) -> list[str]:
+    metrics = quality.metrics
+    categories = set(metrics.get("categories", []))
+    tool_names = _dedupe([str(step.get("name", "")) for step in trace if step.get("name")])
+
+    notes: list[str] = []
+    if "discovery" in categories and "action" in categories:
+        notes.append("Inspect the current state first, then act; avoid editing or submitting before you confirm the real target.")
+    if tool_names:
+        notes.append(f"Prefer the proven tool path ({', '.join(tool_names[:4])}) instead of switching approaches mid-task without evidence.")
+    if metrics.get("recovered"):
+        notes.append("When a step fails, read the tool output and repair the current path before inventing a brand-new workflow.")
+    if metrics.get("requested_count"):
+        notes.append("For count-based requests, track the requested quantity explicitly and report the actual completed count.")
+    if metrics.get("task_kind") == "answering":
+        notes.append("For answering tasks, completion requires entering the editor, drafting content, and observing a real submission signal.")
+    if "validation" in categories:
+        notes.append("Keep validation inside the main workflow so success is confirmed by evidence rather than assumption.")
+    else:
+        notes.append("Add an explicit verification step after the action so the outcome is evidence-based.")
+    if not metrics.get("environment_risk"):
+        notes.append("Persist reusable patterns only; strip paths, timestamps, IDs, and other environment-specific data.")
+    return _merge_string_lists(notes, limit=6)
+
+
+def _build_workflow_outline(
+    user_request: str,
+    quality: AutoSkillQualityReport,
+) -> list[str]:
+    metrics = quality.metrics
+    categories = set(metrics.get("categories", []))
+    outline: list[str] = []
+
+    if "discovery" in categories:
+        outline.append("Inspect the current state, constraints, and true target before committing to any action.")
+    if metrics.get("task_kind") == "answering":
+        outline.append("Open the real answering entry point, draft the content in the verified editor, and keep the interaction focused on that flow.")
+        outline.append("Confirm a durable submission signal instead of assuming that opening the editor or clicking a button already finished the task.")
+    elif "action" in categories:
+        outline.append("Execute the main task through the verified tool path and keep the successful sequence stable.")
+    if metrics.get("recovered"):
+        outline.append("If a step fails, use the failure signal to repair only the affected part of the flow and retry with evidence.")
+    if "validation" in categories:
+        outline.append("Validate the final state with a separate check that proves the user goal was actually achieved.")
+    else:
+        outline.append("Finish with a post-action verification step that checks the resulting state instead of trusting the first success message.")
+
+    if not outline:
+        outline = [
+            "Inspect the current state before acting.",
+            "Execute the main task through the most stable tool path.",
+            "Validate the final state with an explicit post-check.",
+        ]
+    return _merge_string_lists(outline, limit=6)
+
+
+def _build_watchouts(
+    user_request: str,
+    quality: AutoSkillQualityReport,
+) -> list[str]:
+    metrics = quality.metrics
+    categories = set(metrics.get("categories", []))
+    watchouts = [_WARNING_GUIDANCE[warning] for warning in quality.warnings if warning in _WARNING_GUIDANCE]
+
+    if metrics.get("task_kind") == "answering":
+        watchouts.append(
+            "Opening a question page or reading existing answers does not count as answering unless authoring and submission signals are observed."
+        )
+    if "validation" not in categories:
+        watchouts.append("Without a post-action verification step, the workflow can drift even when tool calls look successful.")
+    if not watchouts:
+        watchouts.append("Review the workflow whenever the environment, page structure, or tool behavior changes.")
+
+    return _merge_string_lists(watchouts, limit=6)
+
+
+def _load_existing_auto_skill_knowledge(skill_file: Path | None) -> _AutoSkillKnowledge:
+    if skill_file is None or not skill_file.exists():
+        return _AutoSkillKnowledge()
+
+    try:
+        content = skill_file.read_text(encoding="utf-8")
+    except OSError:
+        return _AutoSkillKnowledge()
+
+    parsed = _parse_skill_document(content)
+    if parsed is None:
+        return _AutoSkillKnowledge()
+
+    frontmatter, _ = parsed
+    metadata = frontmatter.get("metadata") if isinstance(frontmatter.get("metadata"), dict) else {}
+    auto_skill_meta = metadata.get("auto_skill") if isinstance(metadata.get("auto_skill"), dict) else {}
+
+    return _AutoSkillKnowledge(
+        observed_requests=_normalize_string_list(auto_skill_meta.get("observed_requests") or frontmatter.get("triggers")),
+        tools=_normalize_string_list(frontmatter.get("tools")),
+        decision_notes=_normalize_string_list(auto_skill_meta.get("decision_notes")),
+        workflow_outline=_normalize_string_list(auto_skill_meta.get("workflow_outline")),
+        watchouts=_normalize_string_list(auto_skill_meta.get("watchouts")),
+        legacy_family_keys=_normalize_string_list(auto_skill_meta.get("legacy_family_keys")),
+        latest_outcome=_sanitize_multiline_text(auto_skill_meta.get("latest_outcome") or "", max_chars=320),
+        run_count=_safe_int(auto_skill_meta.get("run_count")),
+    )
+
+
+def _render_bullet_list(items: Sequence[str]) -> str:
+    return "\n".join(f"- {item}" for item in items)
+
+
+def _render_numbered_list(items: Sequence[str]) -> str:
+    return "\n".join(f"{index}. {item}" for index, item in enumerate(items, start=1))
+
+
 def _build_skill_markdown(
     skill_name: str,
     user_request: str,
@@ -830,34 +1169,73 @@ def _build_skill_markdown(
     final_result: str,
     trigger: str,
     quality: AutoSkillQualityReport,
+    *,
+    family_key: str,
+    legacy_family_keys: Sequence[str],
+    resolved_tier: str,
+    existing_knowledge: _AutoSkillKnowledge | None = None,
 ) -> str:
+    knowledge = existing_knowledge or _AutoSkillKnowledge()
     generated_at = datetime.now(timezone.utc).isoformat()
-    tool_names = _dedupe([str(step.get("name", "")) for step in trace if step.get("name")])
-    steps = "\n".join(_format_trace_step(index + 1, step) for index, step in enumerate(trace))
+    tool_names = _merge_string_lists(
+        _dedupe([str(step.get("name", "")) for step in trace if step.get("name")]),
+        knowledge.tools,
+        limit=8,
+    )
     tools_summary = ", ".join(tool_names) if tool_names else "workflow tools"
+    observed_requests = _merge_string_lists(
+        [_sanitize_summary_text(user_request, max_chars=160)],
+        knowledge.observed_requests,
+        limit=5,
+    )
+    decision_notes = _merge_string_lists(
+        _build_decision_notes(user_request, trace, quality),
+        knowledge.decision_notes,
+        limit=6,
+    )
+    workflow_outline = _merge_string_lists(
+        _build_workflow_outline(user_request, quality),
+        knowledge.workflow_outline,
+        limit=6,
+    )
+    watchouts = _merge_string_lists(
+        _build_watchouts(user_request, quality),
+        knowledge.watchouts,
+        limit=6,
+    )
+    latest_outcome = _sanitize_multiline_text(final_result, max_chars=320)
+    run_count = max(knowledge.run_count, 0) + 1
+    all_legacy_family_keys = _merge_string_lists(list(legacy_family_keys), knowledge.legacy_family_keys, limit=10)
     frontmatter = {
         "name": skill_name,
-        "description": f"Auto-generated workflow for {_sanitize_summary_text(user_request, max_chars=120)}",
+        "description": f"Auto-maintained guidance for {_sanitize_summary_text(user_request, max_chars=120)}",
         "version": "1.0",
         "tools": tool_names,
-        "triggers": [_sanitize_summary_text(user_request, max_chars=160)],
+        "triggers": observed_requests,
         "metadata": {
             "source": "mini-agent",
             "trigger": trigger,
             "generated_at": generated_at,
+            "updated_at": generated_at,
             "tools": tools_summary,
             "auto_skill": {
-                "family_key": skill_name,
-                "tier": quality.tier,
+                "family_key": family_key,
+                "legacy_family_keys": all_legacy_family_keys,
+                "tier": resolved_tier,
                 "score": quality.score,
                 "reasons": quality.reasons,
                 "warnings": quality.warnings,
                 "metrics": quality.metrics,
+                "run_count": run_count,
+                "observed_requests": observed_requests,
+                "decision_notes": decision_notes,
+                "workflow_outline": workflow_outline,
+                "watchouts": watchouts,
+                "latest_outcome": latest_outcome,
             },
         },
     }
     frontmatter_yaml = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True).strip()
-    final_outcome = _sanitize_multiline_text(final_result, max_chars=320)
     reasons = ", ".join(quality.reasons) if quality.reasons else "n/a"
     warnings = ", ".join(quality.warnings) if quality.warnings else "none"
     return f"""---
@@ -870,26 +1248,36 @@ Use this skill when the task matches the recorded workflow below.
 
 ## When to use
 
-{user_request.strip()}
+{_render_bullet_list(observed_requests)}
+
+## Decision hints
+
+{_render_bullet_list(decision_notes)}
 
 ## Quality signals
 
-- Tier: {quality.tier}
+- Tier: {resolved_tier}
 - Score: {quality.score}
 - Reasons: {reasons}
 - Warnings: {warnings}
 
 ## Procedure
 
-{steps}
+{_render_numbered_list(workflow_outline)}
+
+## Watchouts
+
+{_render_bullet_list(watchouts)}
 
 ## Final outcome
 
-{final_outcome}
+{latest_outcome}
 
 ## Notes
 
-- Generated automatically from a successful execution trace.
+- Auto-maintained from successful execution traces.
+- This skill is updated in place to preserve reusable guidance instead of accumulating near-duplicate folders.
+- Successful observations recorded so far: {run_count}
 - Candidate skills stay out of the auto-load pool until reviewed.
 - Review before reusing if the environment or tool behavior has changed.
 """
@@ -948,10 +1336,57 @@ def _rename_generated_skill_content(skill_content: str, skill_name: str) -> str:
     return f"---\n{frontmatter_yaml}\n---\n\n{body}"
 
 
-def _write_skill(auto_skill_dir: str, skill_name: str, skill_content: str, tier: str) -> tuple[Path, str]:
+def _find_matching_auto_skill_record(
+    auto_skill_dir: str,
+    family_keys: Sequence[str],
+) -> _AutoSkillRecord | None:
+    keys = {str(key).strip() for key in family_keys if str(key).strip()}
+    if not keys:
+        return None
+
+    root = Path(str(auto_skill_dir).strip()).expanduser()
+    matches: list[_AutoSkillRecord] = []
+    for record in _collect_generated_auto_skill_records(root, include_candidates=True):
+        record_keys = {record.family_key, record.skill_name, record.dir_name, *record.aliases}
+        if any(key and key in record_keys for key in keys):
+            matches.append(record)
+
+    if not matches:
+        return None
+    return _select_preferred_cleanup_record(matches)
+
+
+def _write_skill(
+    auto_skill_dir: str,
+    skill_name: str,
+    skill_content: str,
+    tier: str,
+    *,
+    existing_record: _AutoSkillRecord | None = None,
+) -> tuple[Path, str, str]:
     root = Path(str(auto_skill_dir).strip()).expanduser()
     target_root = root if tier == "approved" else root / _CANDIDATE_DIRNAME
     target_root.mkdir(parents=True, exist_ok=True)
+
+    if existing_record is not None:
+        destination_dir = target_root / existing_record.dir_name
+        if existing_record.skill_dir != destination_dir:
+            # 只有在目标路径空闲时才做跨 tier 迁移，避免误覆盖用户已有目录。
+            if not destination_dir.exists():
+                destination_dir.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(existing_record.skill_dir), str(destination_dir))
+            else:
+                destination_dir = existing_record.skill_dir
+
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        skill_file = destination_dir / "SKILL.md"
+        content_to_write = _rename_generated_skill_content(skill_content, destination_dir.name)
+        if skill_file.exists():
+            existing = skill_file.read_text(encoding="utf-8")
+            if _normalize_skill_content(existing) == _normalize_skill_content(content_to_write):
+                return skill_file, destination_dir.name, "reused"
+        skill_file.write_text(content_to_write, encoding="utf-8")
+        return skill_file, destination_dir.name, "updated"
 
     candidate_name = skill_name
     skill_dir = target_root / candidate_name
@@ -959,7 +1394,7 @@ def _write_skill(auto_skill_dir: str, skill_name: str, skill_content: str, tier:
     while skill_dir.exists() and skill_dir.is_dir() and skill_dir.joinpath("SKILL.md").exists():
         existing = skill_dir.joinpath("SKILL.md").read_text(encoding="utf-8")
         if _normalize_skill_content(existing) == _normalize_skill_content(skill_content):
-            return skill_dir.joinpath("SKILL.md"), candidate_name
+            return skill_dir.joinpath("SKILL.md"), candidate_name, "reused"
         candidate_name = f"{skill_name}-{suffix}"
         skill_dir = target_root / candidate_name
         suffix += 1
@@ -968,7 +1403,7 @@ def _write_skill(auto_skill_dir: str, skill_name: str, skill_content: str, tier:
     skill_file = skill_dir / "SKILL.md"
     content_to_write = skill_content if candidate_name == skill_name else _rename_generated_skill_content(skill_content, candidate_name)
     skill_file.write_text(content_to_write, encoding="utf-8")
-    return skill_file, candidate_name
+    return skill_file, candidate_name, "created"
 
 
 def _normalize_skill_content(content: str) -> str:
@@ -988,8 +1423,11 @@ def _normalize_skill_content(content: str) -> str:
 
     frontmatter["name"] = "<skill-name>"
     metadata = frontmatter.get("metadata")
-    if isinstance(metadata, dict) and "generated_at" in metadata:
-        metadata["generated_at"] = "<timestamp>"
+    if isinstance(metadata, dict):
+        if "generated_at" in metadata:
+            metadata["generated_at"] = "<timestamp>"
+        if "updated_at" in metadata:
+            metadata["updated_at"] = "<timestamp>"
 
     body = frontmatter_match.group(2).lstrip()
     body = re.sub(r"^#\s+.+$", "# <skill-name>", body, count=1, flags=re.MULTILINE)
@@ -1059,6 +1497,11 @@ def _load_generated_auto_skill_record(skill_file: Path, tier: str) -> _AutoSkill
         score = 0
 
     family_key = str(auto_skill_meta.get("family_key") or "").strip()
+    aliases = {
+        str(item).strip()
+        for item in auto_skill_meta.get("legacy_family_keys", [])
+        if str(item).strip()
+    }
 
     return _AutoSkillRecord(
         tier=tier,
@@ -1069,6 +1512,7 @@ def _load_generated_auto_skill_record(skill_file: Path, tier: str) -> _AutoSkill
         skill_name=str(frontmatter.get("name") or "").strip(),
         normalized_content=_normalize_skill_content(content),
         family_key=family_key,
+        aliases=aliases,
         score=score,
         warnings=warnings,
         generated_at=_parse_generated_at(metadata.get("generated_at")),

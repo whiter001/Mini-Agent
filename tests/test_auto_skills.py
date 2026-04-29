@@ -478,8 +478,8 @@ def test_auto_skill_creation_persists_and_deduplicates():
         assert second.skill_path == first.skill_path
 
 
-def test_auto_skill_creation_suffixed_when_content_changes():
-    """Changed workflow content should create a new skill file instead of overwriting."""
+def test_auto_skill_creation_updates_existing_skill_when_content_changes():
+    """Changed workflow content should update the existing skill in place and accumulate reusable guidance."""
     with tempfile.TemporaryDirectory() as tmpdir:
         skill_dir = Path(tmpdir) / "skills"
         loader = SkillLoader(str(skill_dir))
@@ -507,13 +507,109 @@ def test_auto_skill_creation_suffixed_when_content_changes():
 
         assert first.skill_path is not None
         assert second.skill_path is not None
-        assert first.skill_path != second.skill_path
-        assert first.skill_name != second.skill_name
+        assert first.skill_path == second.skill_path
+        assert first.skill_name == second.skill_name
+
+        loaded_skill = loader.load_skill(second.skill_path)
+
+        assert loaded_skill is not None
+        assert loaded_skill.metadata is not None
+        assert loaded_skill.metadata["auto_skill"]["run_count"] == 2
+        assert loaded_skill.metadata["auto_skill"]["decision_notes"]
+        assert loaded_skill.metadata["auto_skill"]["workflow_outline"]
+        assert loaded_skill.metadata["auto_skill"]["watchouts"]
+        assert "## Decision hints" in loaded_skill.content
+        assert "## Watchouts" in loaded_skill.content
+        assert "alpha 0" not in loaded_skill.content
+        assert "beta 0" not in loaded_skill.content
 
         fresh_loader = SkillLoader(str(skill_dir))
         discovered = fresh_loader.discover_skills()
 
-        assert {skill.name for skill in discovered} == {first.skill_name, second.skill_name}
+        assert [skill.name for skill in discovered] == [first.skill_name]
+
+
+def test_auto_skill_creation_uses_semantic_name_for_new_skill():
+    """New auto skills should prefer semantic family names over raw tool names and URL fragments."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        skill_dir = Path(tmpdir) / "skills"
+        loader = SkillLoader(str(skill_dir))
+        turn_messages = build_turn_messages(
+            "在页面回答这个题 https://www.zhihu.com/question/1",
+            [
+                ("get_skill", {"skill_name": "autobrowser"}, "Loaded autobrowser skill."),
+                ("bash", {"command": "autobrowser.cmd open https://www.zhihu.com/question/1"}, "Opened question page."),
+                ("bash", {"command": "autobrowser.cmd click 写回答"}, "Opened answer editor."),
+                ("bash", {"command": 'autobrowser.cmd type textarea.answer "answer"'}, "Typed answer."),
+                ("bash", {"command": "autobrowser.cmd click 发布回答"}, "Submitted answer successfully."),
+            ],
+        )
+
+        result = maybe_create_auto_skill(
+            loader,
+            turn_messages,
+            "已成功回答该问题并提交。",
+            auto_skill_dir=str(skill_dir),
+            min_tool_calls=5,
+        )
+
+        assert result.created is True
+        assert result.skill_name.startswith("auto-answer-zhihu")
+        assert "https" not in result.skill_name
+        assert "get-skill" not in result.skill_name
+
+
+def test_auto_skill_creation_updates_legacy_named_family_in_place():
+    """Legacy auto-generated families should be updated in place instead of spawning a second semantic-name directory."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        skill_root = Path(tmpdir) / "skills"
+        skill_root.mkdir()
+        create_generated_auto_skill(
+            skill_root,
+            "auto-get-skill-bash-https-www-zhihu-com",
+            internal_name="auto-get-skill-bash-https-www-zhihu-com",
+            family_key="auto-get-skill-bash-https-www-zhihu-com",
+            body="Legacy workflow variant.",
+        )
+
+        loader = SkillLoader(str(skill_root))
+        loader.discover_skills()
+        legacy_path = skill_root / "auto-get-skill-bash-https-www-zhihu-com" / "SKILL.md"
+        turn_messages = build_turn_messages(
+            "在页面回答这个题 https://www.zhihu.com/question/1",
+            [
+                ("get_skill", {"skill_name": "autobrowser"}, "Loaded autobrowser skill."),
+                ("bash", {"command": "autobrowser.cmd open https://www.zhihu.com/question/1"}, "Opened question page."),
+                ("bash", {"command": "autobrowser.cmd click 写回答"}, "Opened answer editor."),
+                ("bash", {"command": 'autobrowser.cmd type textarea.answer "answer"'}, "Typed answer."),
+                ("bash", {"command": "autobrowser.cmd click 发布回答"}, "Submitted answer successfully."),
+            ],
+        )
+
+        result = maybe_create_auto_skill(
+            loader,
+            turn_messages,
+            "已成功回答该问题并提交。",
+            auto_skill_dir=str(skill_root),
+            min_tool_calls=5,
+        )
+
+        assert result.created is True
+        assert result.skill_path == legacy_path
+        assert result.skill_name == "auto-get-skill-bash-https-www-zhihu-com"
+        assert result.write_mode == "updated"
+
+        updated_skill = loader.load_skill(legacy_path)
+
+        assert updated_skill is not None
+        assert updated_skill.metadata is not None
+        assert updated_skill.metadata["auto_skill"]["family_key"].startswith("auto-answer-zhihu")
+        assert "auto-get-skill-bash-https-www-zhihu-com" in updated_skill.metadata["auto_skill"]["legacy_family_keys"]
+
+        fresh_loader = SkillLoader(str(skill_root))
+        discovered = fresh_loader.discover_skills()
+
+        assert [skill.name for skill in discovered] == ["auto-get-skill-bash-https-www-zhihu-com"]
 
 
 def test_auto_skill_prompt_truncates_large_skill_content():

@@ -11,7 +11,7 @@ This project comes packed with features designed for a robust and intelligent ag
 - ✅ **Intelligent Context Management**: Automatically summarizes conversation history to handle contexts up to a configurable token limit, enabling infinitely long tasks.
 - ✅ **Claude Skills Integration**: Comes with 15 professional skills for documents, design, testing, and development.
 - ✅ **Auto Skills**: Relevant skills are selected from the current request and injected automatically, inspired by Hermes Agent.
-- ✅ **Auto Skill Creation**: Reusable workflows can be persisted to `~/.mini-agent/skills/` and picked up on future runs.
+- ✅ **Auto Skill Creation**: Reusable workflows can be persisted to `~/.mini-agent/skills/`, updated in place by family, and reused as decision guidance on future runs.
 - ✅ **Persistent Memory**: Durable notes and user facts are stored under `~/.mini-agent/` with searchable SQLite-backed recall.
 - ✅ **MCP Tool Integration**: Natively supports MCP for tools like knowledge graph access and web search.
 - ✅ **Comprehensive Logging**: Detailed logs for every request, response, and tool execution for easy debugging.
@@ -123,6 +123,7 @@ temperature: 0.7 # Default sampling temperature sent by Mini Agent
 ```
 
 Auto-generated skills are stored in `~/.mini-agent/skills/` by default and are scanned alongside bundled skills.
+When a new run matches an existing auto-skill family, Mini Agent updates that skill in place and accumulates reusable guidance instead of creating another near-duplicate folder.
 Lower-confidence generated workflows are saved under `~/.mini-agent/skills/_candidates/` for review and are not auto-loaded until promoted.
 If you want to keep additional custom skills, set `skills_external_dirs` in `~/.mini-agent/config/config.yaml`.
 

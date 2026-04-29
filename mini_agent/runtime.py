@@ -210,8 +210,9 @@ def persist_auto_skill_if_needed(
             else:
                 context.skill_loader.discover_skills()
         tier_label = result.tier or "approved"
+        write_label = result.write_mode or "created"
         print(
-            f"{Colors.BRIGHT_GREEN}🧠 Auto skill {tier_label} created:{Colors.RESET} "
+            f"{Colors.BRIGHT_GREEN}🧠 Auto skill {tier_label} {write_label}:{Colors.RESET} "
             f"{result.skill_name} -> {result.skill_path} {Colors.DIM}(score={result.quality_score}){Colors.RESET}"
         )
 
