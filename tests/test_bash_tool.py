@@ -2,6 +2,9 @@
 
 import asyncio
 import platform
+import socket
+import sys
+import time
 
 import pytest
 
@@ -25,6 +28,19 @@ def _loop_command(prefix: str, count: int, delay_ms: int = 500) -> str:
         return f'1..{count} | ForEach-Object {{ Write-Output ("{prefix} $($_)"); Start-Sleep -Milliseconds {delay_ms} }}'
     numbers = " ".join(str(i) for i in range(1, count + 1))
     return f"for i in {numbers}; do echo '{prefix} '$i; sleep {delay_ms / 1000}; done"
+
+
+def _python_module_command(module: str, *args: object) -> str:
+    quoted_python = f'"{sys.executable}"'
+    arg_text = " ".join(str(arg) for arg in args)
+    prefix = f"& {quoted_python}" if platform.system() == "Windows" else quoted_python
+    return f"{prefix} -m {module} {arg_text}".strip()
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 @pytest.mark.asyncio
@@ -309,3 +325,43 @@ async def test_timeout_validation():
     result = await bash_tool.execute(command=_shell_command("echo 'test'", "Write-Output 'test'"), timeout=0)
     assert result.success
     print("Timeout < 1 handled correctly")
+
+
+def test_long_running_command_heuristics_ignore_build_commands():
+    """Long-running command detection should avoid common one-shot build/test commands."""
+    bash_tool = BashTool()
+
+    assert bash_tool._looks_like_long_running_command("npm run dev")
+    assert bash_tool._looks_like_long_running_command("vite")
+    assert bash_tool._looks_like_long_running_command('"python" -m http.server 8000')
+
+    assert not bash_tool._looks_like_long_running_command("npm run test")
+    assert not bash_tool._looks_like_long_running_command("vite build")
+    assert not bash_tool._looks_like_long_running_command("pnpm lint")
+
+
+@pytest.mark.asyncio
+async def test_service_command_auto_backgrounds_and_detects_ready_port():
+    """Service-like commands should auto-switch to background and return once ready."""
+    bash_tool = BashTool()
+    bash_kill_tool = BashKillTool()
+    port = _free_port()
+    command = _python_module_command("http.server", port)
+
+    started = time.monotonic()
+    result = await bash_tool.execute(command=command)
+    elapsed = time.monotonic() - started
+
+    try:
+        assert result.success
+        assert result.bash_id is not None
+        assert "Auto-switched to background" in result.stdout
+        assert f"Port 127.0.0.1:{port} is accepting connections" in result.stdout
+        assert elapsed < 6
+
+        bg_shell = BackgroundShellManager.get(result.bash_id)
+        assert bg_shell is not None
+        assert bg_shell.status == "running"
+    finally:
+        if result.bash_id:
+            await bash_kill_tool.execute(bash_id=result.bash_id)
