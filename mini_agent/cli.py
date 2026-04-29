@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
+from datetime import datetime
+from importlib import metadata
 from pathlib import Path
 from typing import List
 
+from mini_agent import __version__
 from mini_agent.config import Config
 from mini_agent.memory_store import MemoryStore
 from mini_agent.runtime import (
@@ -34,6 +38,112 @@ from mini_agent.tools.mcp_loader import load_mcp_tools_async, set_mcp_timeout_co
 from mini_agent.tools.memory_tools import create_memory_tools
 from mini_agent.tools.note_tool import SessionNoteTool
 from mini_agent.tools.skill_tool import create_skill_tools
+
+
+_INSTALL_MARKER_FILENAMES = {
+    "direct_url.json",
+    "entry_points.txt",
+    "installer",
+    "metadata",
+    "pkg-info",
+    "record",
+    "sources.txt",
+}
+
+
+def _collect_installation_marker_paths(
+    distribution: metadata.Distribution,
+    *,
+    executable_path: str | Path | None = None,
+) -> list[Path]:
+    """Collect metadata paths whose mtimes approximate the local install time."""
+    candidates: dict[Path, None] = {}
+
+    def add_candidate(path_like: str | Path | None) -> None:
+        if path_like is None:
+            return
+        path = Path(path_like)
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        if resolved.exists():
+            candidates[resolved] = None
+
+    for package_file in distribution.files or []:
+        try:
+            located = Path(distribution.locate_file(package_file)).resolve()
+        except OSError:
+            continue
+
+        metadata_parent = next(
+            (
+                parent
+                for parent in [located, *located.parents]
+                if parent.name.lower().endswith((".dist-info", ".egg-info"))
+            ),
+            None,
+        )
+        if metadata_parent is not None:
+            add_candidate(metadata_parent)
+
+        if located.name.lower() in _INSTALL_MARKER_FILENAMES:
+            add_candidate(located)
+
+    dist_path = getattr(distribution, "_path", None)
+    if dist_path is not None:
+        add_candidate(dist_path)
+        try:
+            add_candidate(distribution.locate_file(dist_path))
+        except OSError:
+            pass
+
+    executable = Path(executable_path) if executable_path is not None else Path(sys.argv[0])
+    add_candidate(executable)
+
+    return list(candidates)
+
+
+def get_installation_time(
+    dist_name: str = "mini-agent",
+    *,
+    executable_path: str | Path | None = None,
+) -> datetime | None:
+    """Return the best-effort local install/update time for the current CLI."""
+    try:
+        distribution = metadata.distribution(dist_name)
+    except metadata.PackageNotFoundError:
+        distribution = None
+
+    candidate_paths: list[Path] = []
+    if distribution is not None:
+        candidate_paths.extend(_collect_installation_marker_paths(distribution, executable_path=executable_path))
+    elif executable_path is not None:
+        executable = Path(executable_path).resolve()
+        if executable.exists():
+            candidate_paths.append(executable)
+
+    if not candidate_paths:
+        return None
+
+    latest_mtime = max(path.stat().st_mtime for path in candidate_paths)
+    return datetime.fromtimestamp(latest_mtime)
+
+
+def get_version_text() -> str:
+    """Build version output including best-effort local install time."""
+    lines = [f"mini-agent {__version__}"]
+    installed_at = get_installation_time()
+    if installed_at is not None:
+        lines.append(f"Installed at: {installed_at.strftime('%Y-%m-%d %H:%M:%S')}")
+    else:
+        lines.append("Installed at: unavailable")
+    return "\n".join(lines)
+
+
+def print_version_info() -> None:
+    """Print version information for the installed CLI."""
+    print(get_version_text())
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -80,8 +190,8 @@ Examples:
     parser.add_argument(
         "--version",
         "-v",
-        action="version",
-        version="mini-agent 0.1.0",
+        action="store_true",
+        help="Show version information, including the local install time",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -314,6 +424,10 @@ async def run_agent(workspace_dir: Path, prompt: str | None = None):
 def main():
     """Main entry point for CLI."""
     args = parse_args()
+
+    if getattr(args, "version", False):
+        print_version_info()
+        return
 
     if args.command == "help":
         print_help(args.topic)
