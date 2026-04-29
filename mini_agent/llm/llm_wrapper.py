@@ -40,6 +40,7 @@ class LLMClient:
         api_base: str = "https://api.minimaxi.com",
         model: str = "MiniMax-M2.7",
         retry_config: RetryConfig | None = None,
+        temperature: float = 0.7,
     ):
         """Initialize LLM client with specified provider.
 
@@ -51,11 +52,13 @@ class LLMClient:
                      For third-party APIs (e.g., https://api.siliconflow.cn/v1), used as-is.
             model: Model name to use
             retry_config: Optional retry configuration
+            temperature: Sampling temperature passed to the model
         """
         self.provider = provider
         self.api_key = api_key
         self.model = model
         self.retry_config = retry_config or RetryConfig()
+        self.temperature = temperature
 
         # Normalize api_base (remove trailing slash)
         api_base = api_base.rstrip("/")
@@ -87,6 +90,7 @@ class LLMClient:
                 api_base=full_api_base,
                 model=model,
                 retry_config=retry_config,
+                temperature=temperature,
             )
         elif provider == LLMProvider.OPENAI:
             self._client = OpenAIClient(
@@ -94,11 +98,17 @@ class LLMClient:
                 api_base=full_api_base,
                 model=model,
                 retry_config=retry_config,
+                temperature=temperature,
             )
         else:
             raise ValueError(f"Unsupported provider: {provider}")
 
-        logger.info("Initialized LLM client with provider: %s, api_base: %s", provider, full_api_base)
+        logger.info(
+            "Initialized LLM client with provider: %s, api_base: %s, temperature: %s",
+            provider,
+            full_api_base,
+            temperature,
+        )
 
     @property
     def retry_callback(self):

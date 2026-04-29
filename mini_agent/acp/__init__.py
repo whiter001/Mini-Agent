@@ -212,7 +212,19 @@ async def run_acp_server(config: Config | None = None) -> None:
         if memory_prompt:
             system_prompt = f"{system_prompt.rstrip()}\n\n{memory_prompt}"
     rcfg = config.llm.retry
-    llm = LLMClient(api_key=config.llm.api_key, api_base=config.llm.api_base, model=config.llm.model, retry_config=RetryConfigBase(enabled=rcfg.enabled, max_retries=rcfg.max_retries, initial_delay=rcfg.initial_delay, max_delay=rcfg.max_delay, exponential_base=rcfg.exponential_base))
+    llm = LLMClient(
+        api_key=config.llm.api_key,
+        api_base=config.llm.api_base,
+        model=config.llm.model,
+        retry_config=RetryConfigBase(
+            enabled=rcfg.enabled,
+            max_retries=rcfg.max_retries,
+            initial_delay=rcfg.initial_delay,
+            max_delay=rcfg.max_delay,
+            exponential_base=rcfg.exponential_base,
+        ),
+        temperature=config.llm.temperature,
+    )
     reader, writer = await stdio_streams()
     AgentSideConnection(
         lambda conn: MiniMaxACPAgent(conn, config, llm, base_tools, skill_loader, memory_store, system_prompt),

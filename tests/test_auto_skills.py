@@ -4,13 +4,14 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from mini_agent.agent import Agent
 from mini_agent.cli import build_turn_context
 from mini_agent.config import ToolsConfig
 from mini_agent.schema import FunctionCall, Message, ToolCall
-from mini_agent.tools.auto_skill import _collect_turn_trace, build_auto_skill_context, maybe_create_auto_skill
+from mini_agent.tools.auto_skill import _collect_turn_trace, build_auto_skill_context, cleanup_auto_skills, maybe_create_auto_skill
 from mini_agent.tools.skill_loader import SkillLoader
 
 
@@ -25,6 +26,53 @@ description: {description}
 {content}
 """
     skill_file.write_text(skill_content, encoding="utf-8")
+
+
+def create_generated_auto_skill(
+    skill_dir: Path,
+    directory_name: str,
+    *,
+    internal_name: str,
+    score: int = 8,
+    generated_at: str = "2026-04-29T00:00:00+00:00",
+    warnings: list[str] | None = None,
+    family_key: str | None = None,
+    body: str = "Auto-generated workflow body.",
+):
+    """Create a generated auto skill fixture with structured metadata."""
+    target_dir = skill_dir / directory_name
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    auto_skill_metadata: dict[str, object] = {
+        "tier": "approved",
+        "score": score,
+        "warnings": warnings or [],
+    }
+    if family_key:
+        auto_skill_metadata["family_key"] = family_key
+
+    frontmatter = {
+        "name": internal_name,
+        "description": f"Auto-generated workflow for {directory_name}",
+        "metadata": {
+            "source": "mini-agent",
+            "generated_at": generated_at,
+            "auto_skill": auto_skill_metadata,
+        },
+    }
+    content = (
+        "---\n"
+        f"{yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True).strip()}\n"
+        "---\n\n"
+        f"# {directory_name}\n\n"
+        "## When to use\n\n"
+        f"{directory_name}\n\n"
+        "## Procedure\n\n"
+        "1. Execute `bash`\n\n"
+        "## Final outcome\n\n"
+        f"{body}\n"
+    )
+    (target_dir / "SKILL.md").write_text(content, encoding="utf-8")
 
 
 def build_turn_messages(user_request: str, steps: list[tuple[str, dict[str, object], str]]) -> list[Message]:
@@ -460,6 +508,12 @@ def test_auto_skill_creation_suffixed_when_content_changes():
         assert first.skill_path is not None
         assert second.skill_path is not None
         assert first.skill_path != second.skill_path
+        assert first.skill_name != second.skill_name
+
+        fresh_loader = SkillLoader(str(skill_dir))
+        discovered = fresh_loader.discover_skills()
+
+        assert {skill.name for skill in discovered} == {first.skill_name, second.skill_name}
 
 
 def test_auto_skill_prompt_truncates_large_skill_content():
@@ -546,8 +600,82 @@ def test_auto_skill_creation_records_quality_metadata_for_approved_skills():
         assert loaded_skill.metadata is not None
         assert loaded_skill.metadata["auto_skill"]["tier"] == "approved"
         assert loaded_skill.metadata["auto_skill"]["score"] == result.quality_score
+        assert loaded_skill.metadata["auto_skill"]["family_key"] == result.skill_name
         assert "discovery" in loaded_skill.metadata["auto_skill"]["metrics"]["categories"]
         assert "validation" in loaded_skill.metadata["auto_skill"]["metrics"]["categories"]
+
+
+def test_cleanup_auto_skills_archives_stale_history_and_repairs_internal_names():
+    """Cleanup should archive stale historical variants and repair mismatched frontmatter names."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        skill_root = Path(tmpdir) / "skills"
+        skill_root.mkdir()
+        create_generated_auto_skill(
+            skill_root,
+            "auto-zhihu-answer",
+            internal_name="auto-zhihu-answer",
+            score=7,
+            generated_at="2026-04-29T08:00:00+00:00",
+            body="Older workflow variant.",
+        )
+        create_generated_auto_skill(
+            skill_root,
+            "auto-zhihu-answer-2",
+            internal_name="auto-zhihu-answer",
+            score=9,
+            generated_at="2026-04-29T09:00:00+00:00",
+            body="Newer workflow variant.",
+        )
+
+        report = cleanup_auto_skills(str(skill_root), apply=True)
+
+        assert report.scanned_skills == 2
+        assert report.archived_count == 1
+        assert report.renamed_count == 1
+        assert (skill_root / "auto-zhihu-answer-2" / "SKILL.md").exists()
+        assert "name: auto-zhihu-answer-2" in (skill_root / "auto-zhihu-answer-2" / "SKILL.md").read_text(encoding="utf-8")
+
+        archived_skills = list((skill_root / "_archived").rglob("SKILL.md"))
+        assert len(archived_skills) == 1
+        assert archived_skills[0].parent.name == "auto-zhihu-answer"
+
+        loader = SkillLoader(str(skill_root))
+        discovered = loader.discover_skills()
+
+        assert [skill.name for skill in discovered] == ["auto-zhihu-answer-2"]
+
+
+def test_cleanup_auto_skills_uses_family_key_for_future_variants():
+    """Cleanup should also collapse newer suffixed variants that already have unique frontmatter names."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        skill_root = Path(tmpdir) / "skills"
+        skill_root.mkdir()
+        create_generated_auto_skill(
+            skill_root,
+            "auto-baidu-answer",
+            internal_name="auto-baidu-answer",
+            family_key="auto-baidu-answer",
+            score=8,
+            generated_at="2026-04-29T08:00:00+00:00",
+            body="Older family member.",
+        )
+        create_generated_auto_skill(
+            skill_root,
+            "auto-baidu-answer-2",
+            internal_name="auto-baidu-answer-2",
+            family_key="auto-baidu-answer",
+            score=9,
+            generated_at="2026-04-29T09:00:00+00:00",
+            body="Newer family member.",
+        )
+
+        report = cleanup_auto_skills(str(skill_root), apply=False)
+
+        assert report.archived_count == 1
+        assert report.renamed_count == 0
+        assert any(action.detail == "historical-version:auto-baidu-answer" for action in report.actions)
+        assert (skill_root / "auto-baidu-answer").exists()
+        assert not (skill_root / "_archived").exists()
 
 
 def test_auto_skill_creation_candidate_stays_out_of_loader_discovery():
@@ -653,6 +781,35 @@ def test_auto_skill_creation_rejects_multilingual_failure_summary():
             turn_messages,
             "很抱歉，当前页面需要登录，autobrowser 无法处理登录验证流程。",
             auto_skill_dir=str(skill_dir),
+        )
+
+        assert result.created is False
+        assert result.reason == "quality-gate"
+        assert "final-result-not-successful" in result.quality_warnings
+
+
+def test_auto_skill_creation_rejects_blocked_publish_summary():
+    """Answering runs that admit publishing was blocked should never become reusable auto-skills."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        skill_dir = Path(tmpdir) / "skills"
+        loader = SkillLoader(str(skill_dir))
+        turn_messages = build_turn_messages(
+            "在页面回答这个题 https://www.zhihu.com/question/1",
+            [
+                ("bash", {"command": "autobrowser.cmd open https://www.zhihu.com/question/1"}, "Opened the question page."),
+                ("bash", {"command": "autobrowser.cmd click 写回答"}, "Opened the answer editor."),
+                ("bash", {"command": 'autobrowser.cmd type .public-DraftEditor-content "answer"'}, "Typed answer content into the editor."),
+                ("bash", {"command": "autobrowser.cmd click 发布回答"}, '{"found": true, "selector": "发布回答"}'),
+                ("bash", {"command": "autobrowser.cmd eval publish-state"}, "Editor still exists"),
+            ],
+        )
+
+        result = maybe_create_auto_skill(
+            loader,
+            turn_messages,
+            "我已经成功在知乎问题页面输入了回答内容，但是由于知乎平台的反自动化机制，发布按钮的点击操作似乎被阻止了。",
+            auto_skill_dir=str(skill_dir),
+            min_tool_calls=5,
         )
 
         assert result.created is False

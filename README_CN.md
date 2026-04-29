@@ -119,6 +119,7 @@ api_key: "YOUR_API_KEY_HERE" # 填入第 1 步获取的 API Key
 api_base: "https://api.minimaxi.com" # 国内版
 # api_base: "https://api.minimax.io"  # 海外版（如使用海外平台，请取消本行注释）
 model: "MiniMax-M2.7"
+temperature: 0.7 # Mini Agent 默认传给模型的采样温度
 ```
 
 自动生成的 skills 默认存放在 `~/.mini-agent/skills/`，并会与内置 skills 一起扫描加载。
@@ -190,6 +191,7 @@ api_key: "YOUR_API_KEY_HERE" # 填入第 1 步获取的 API Key
 api_base: "https://api.minimaxi.com" # 国内版
 # api_base: "https://api.minimax.io"  # 海外版（如使用海外平台，请修改此行）
 model: "MiniMax-M2.7"
+temperature: 0.7 # Mini Agent 默认传给模型的采样温度
 # max_steps: 100  # 可选：省略后会持续运行，直到您手动停止
 workspace_dir: "./workspace"
 ```
@@ -323,6 +325,7 @@ python -m mini_agent.cli
 
 - [开发指南](docs/DEVELOPMENT_GUIDE_CN.md) - 详细的开发和配置指引
 - [生产环境指南](docs/PRODUCTION_GUIDE_CN.md) - 生产部署最佳实践
+- [MiniMax Anthropic 兼容 API 说明](docs/MINIMAX_ANTHROPIC_API_CN.md) - 补充接口路径、流式事件、工具调用回传方式，以及本仓库里 `api_base` 的真实拼接规则
 
 ## 社区
 

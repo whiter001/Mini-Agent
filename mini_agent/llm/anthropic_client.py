@@ -27,6 +27,7 @@ class AnthropicClient(LLMClientBase):
         api_base: str = "https://api.minimaxi.com/anthropic",
         model: str = "MiniMax-M2.7",
         retry_config: RetryConfig | None = None,
+        temperature: float = 0.7,
     ):
         """Initialize Anthropic client.
 
@@ -35,8 +36,9 @@ class AnthropicClient(LLMClientBase):
             api_base: Base URL for the API (default: MiniMax Anthropic endpoint)
             model: Model name to use (default: MiniMax-M2.7)
             retry_config: Optional retry configuration
+            temperature: Sampling temperature passed to the model
         """
-        super().__init__(api_key, api_base, model, retry_config)
+        super().__init__(api_key, api_base, model, retry_config, temperature)
 
         # Initialize Anthropic async client
         self.client = anthropic.AsyncAnthropic(
@@ -68,6 +70,7 @@ class AnthropicClient(LLMClientBase):
             "model": self.model,
             "max_tokens": 16384,
             "messages": api_messages,
+            "temperature": self.temperature,
         }
 
         if system_message:

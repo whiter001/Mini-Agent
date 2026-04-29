@@ -16,6 +16,7 @@ from mini_agent.runtime import (
     persist_auto_skill_if_needed,
     run_interactive_session,
 )
+from mini_agent.tools.auto_skill import AutoSkillCleanupReport, cleanup_auto_skills
 from mini_agent.terminal_ui import (
     Colors,
     get_log_directory,
@@ -46,8 +47,10 @@ Examples:
   mini-agent                              # Use current directory as workspace
   mini-agent --workspace /path/to/dir     # Use specific workspace directory
   mini-agent -p "列出当前的skills有哪些"     # Execute a prompt non-interactively
+    mini-agent cleanup-auto-skills          # Preview cleanup of historical auto skills
   mini-agent help                         # Show command help
   mini-agent help log                     # Show log command help
+    mini-agent help cleanup-auto-skills     # Show cleanup command help
   mini-agent log                          # Show log directory and recent files
   mini-agent log agent_run_xxx.log        # Read a specific log file
         """,
@@ -99,7 +102,74 @@ Examples:
         help="Optional help topic (for example: log)",
     )
 
+    cleanup_parser = subparsers.add_parser(
+        "cleanup-auto-skills",
+        help="Review or clean up historical auto-generated skills",
+    )
+    cleanup_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply the cleanup plan. Without this flag, only a dry-run preview is shown.",
+    )
+    cleanup_parser.add_argument(
+        "--skills-dir",
+        type=str,
+        default=None,
+        help="Auto-skill root directory (default: ~/.mini-agent/skills)",
+    )
+    cleanup_parser.add_argument(
+        "--archive-dir",
+        type=str,
+        default=None,
+        help="Archive directory for migrated skill folders (default: <skills-dir>/_archived/auto-skill-cleanup-<timestamp>)",
+    )
+    cleanup_parser.add_argument(
+        "--skip-candidates",
+        action="store_true",
+        help="Only inspect approved auto-skills in the root directory.",
+    )
+
     return parser.parse_args(argv)
+
+
+def print_auto_skill_cleanup_report(report: AutoSkillCleanupReport) -> None:
+    """Render a human-readable summary for the auto-skill cleanup command."""
+    mode_label = "Applied cleanup" if report.apply else "Dry-run cleanup plan"
+    print(f"\n{Colors.BOLD}{Colors.BRIGHT_YELLOW}{mode_label}:{Colors.RESET}")
+    print(f"  Root: {Colors.BRIGHT_CYAN}{report.root}{Colors.RESET}")
+    print(f"  Archive: {Colors.BRIGHT_CYAN}{report.archive_root}{Colors.RESET}")
+    print(f"  Scanned generated skills: {Colors.BRIGHT_WHITE}{report.scanned_skills}{Colors.RESET}")
+    print(f"  Historical families: {Colors.BRIGHT_WHITE}{report.family_groups}{Colors.RESET}")
+    print(f"  To archive: {Colors.BRIGHT_WHITE}{report.archived_count}{Colors.RESET}")
+    print(f"  To rename: {Colors.BRIGHT_WHITE}{report.renamed_count}{Colors.RESET}")
+    print(f"  Kept active: {Colors.BRIGHT_WHITE}{report.kept_count}{Colors.RESET}")
+
+    if not report.actions:
+        print(f"  {Colors.GREEN}No cleanup actions needed.{Colors.RESET}\n")
+        return
+
+    print(f"\n{Colors.BOLD}{Colors.BRIGHT_YELLOW}Planned Actions:{Colors.RESET}")
+    for index, action in enumerate(report.actions, 1):
+        if action.kind == "archive-skill" and action.target_path is not None:
+            print(
+                f"  {index:2d}. {Colors.YELLOW}archive{Colors.RESET} "
+                f"{action.skill_path} -> {action.target_path} {Colors.DIM}({action.detail}){Colors.RESET}"
+            )
+            continue
+        if action.kind == "rename-skill-name":
+            print(
+                f"  {index:2d}. {Colors.CYAN}rename{Colors.RESET} "
+                f"{action.skill_path} -> name={action.replacement_name} {Colors.DIM}({action.detail}){Colors.RESET}"
+            )
+            continue
+        print(f"  {index:2d}. {action.kind} {action.skill_path}")
+
+    if not report.apply:
+        print(
+            f"\n{Colors.DIM}Re-run with {Colors.BRIGHT_GREEN}mini-agent cleanup-auto-skills --apply{Colors.DIM} to execute these changes.{Colors.RESET}\n"
+        )
+    else:
+        print()
 
 
 async def initialize_base_tools(config: Config):
@@ -254,6 +324,17 @@ def main():
             read_log_file(args.filename)
         else:
             show_log_directory(open_file_manager=True)
+        return
+
+    if args.command == "cleanup-auto-skills":
+        skills_dir = args.skills_dir or "~/.mini-agent/skills"
+        report = cleanup_auto_skills(
+            skills_dir,
+            apply=args.apply,
+            include_candidates=not args.skip_candidates,
+            archive_dir=args.archive_dir,
+        )
+        print_auto_skill_cleanup_report(report)
         return
 
     if args.workspace:

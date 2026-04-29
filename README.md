@@ -119,6 +119,7 @@ api_key: "YOUR_API_KEY_HERE" # API Key from step 1
 api_base: "https://api.minimax.io" # Global
 # api_base: "https://api.minimaxi.com"  # China
 model: "MiniMax-M2.7"
+temperature: 0.7 # Default sampling temperature sent by Mini Agent
 ```
 
 Auto-generated skills are stored in `~/.mini-agent/skills/` by default and are scanned alongside bundled skills.
@@ -190,6 +191,7 @@ api_key: "YOUR_API_KEY_HERE" # API Key from step 1
 api_base: "https://api.minimax.io" # Global
 # api_base: "https://api.minimaxi.com"  # China
 model: "MiniMax-M2.7"
+temperature: 0.7 # Default sampling temperature sent by Mini Agent
 # max_steps: 100  # Optional: omit to let the agent keep running until you stop it manually
 workspace_dir: "./workspace"
 ```
@@ -323,6 +325,7 @@ python -m mini_agent.cli
 
 - [Development Guide](docs/DEVELOPMENT_GUIDE.md) - Detailed development and configuration guidance
 - [Production Guide](docs/PRODUCTION_GUIDE.md) - Best practices for production deployment
+- [MiniMax Anthropic API Guide](docs/MINIMAX_ANTHROPIC_API.md) - Concrete notes on endpoint paths, streaming events, tool-use roundtrips, and how this repo maps `api_base` to the Anthropic-compatible API
 
 ## Community
 

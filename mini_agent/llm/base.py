@@ -20,6 +20,7 @@ class LLMClientBase(ABC):
         api_base: str,
         model: str,
         retry_config: RetryConfig | None = None,
+        temperature: float = 0.7,
     ):
         """Initialize the LLM client.
 
@@ -28,11 +29,16 @@ class LLMClientBase(ABC):
             api_base: Base URL for the API
             model: Model name to use
             retry_config: Optional retry configuration
+            temperature: Sampling temperature passed to the model
         """
+        if not 0 < temperature <= 1:
+            raise ValueError("temperature must be in the range (0, 1]")
+
         self.api_key = api_key
         self.api_base = api_base
         self.model = model
         self.retry_config = retry_config or RetryConfig()
+        self.temperature = temperature
 
         # Callback for tracking retry count
         self.retry_callback = None

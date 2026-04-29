@@ -131,7 +131,7 @@ class SkillLoader:
         self.extra_skills_dirs = [Path(str(path).strip()) for path in (extra_skills_dirs or [])]
         self.ignored_skill_dir_names = {
             str(name).strip()
-            for name in (ignored_skill_dir_names or ["_candidates"])
+            for name in (ignored_skill_dir_names or ["_candidates", "_archived"])
             if str(name).strip()
         }
         self.loaded_skills: Dict[str, Skill] = {}

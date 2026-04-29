@@ -157,6 +157,23 @@ def test_discover_skills():
         assert len(loader.list_skills()) == 3
 
 
+def test_discover_skills_ignores_archived_directory():
+    """Archived generated skills should stay out of the active discovery pool."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        active_dir = Path(tmpdir) / "active-skill"
+        active_dir.mkdir()
+        create_test_skill(active_dir, "active-skill", "Active skill", "Content")
+
+        archived_dir = Path(tmpdir) / "_archived" / "cleanup-run" / "archived-skill"
+        archived_dir.mkdir(parents=True)
+        create_test_skill(archived_dir, "archived-skill", "Archived skill", "Old content")
+
+        loader = SkillLoader(tmpdir)
+        skills = loader.discover_skills()
+
+        assert [skill.name for skill in skills] == ["active-skill"]
+
+
 def test_get_skill():
     """Test getting a loaded skill"""
     with tempfile.TemporaryDirectory() as tmpdir:

@@ -26,6 +26,7 @@ class LLMConfig(BaseModel):
     api_base: str = "https://api.minimax.io"
     model: str = "MiniMax-M2.7"
     provider: str = "anthropic"  # "anthropic" or "openai"
+    temperature: float = Field(default=0.7, gt=0.0, le=1.0)
     retry: RetryConfig = Field(default_factory=RetryConfig)
 
 
@@ -141,6 +142,7 @@ class Config(BaseModel):
             api_base=data.get("api_base", "https://api.minimax.io"),
             model=data.get("model", "MiniMax-M2.7"),
             provider=data.get("provider", "anthropic"),
+            temperature=data.get("temperature", 0.7),
             retry=retry_config,
         )
 

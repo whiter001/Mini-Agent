@@ -114,6 +114,7 @@ async def build_runtime_context(
         api_base=config.llm.api_base,
         model=config.llm.model,
         retry_config=retry_config if config.llm.retry.enabled else None,
+        temperature=config.llm.temperature,
     )
 
     if config.llm.retry.enabled:

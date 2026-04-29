@@ -28,6 +28,7 @@ class OpenAIClient(LLMClientBase):
         api_base: str = "https://api.minimaxi.com/v1",
         model: str = "MiniMax-M2.7",
         retry_config: RetryConfig | None = None,
+        temperature: float = 0.7,
     ):
         """Initialize OpenAI client.
 
@@ -36,8 +37,9 @@ class OpenAIClient(LLMClientBase):
             api_base: Base URL for the API (default: MiniMax OpenAI endpoint)
             model: Model name to use (default: MiniMax-M2.7)
             retry_config: Optional retry configuration
+            temperature: Sampling temperature passed to the model
         """
-        super().__init__(api_key, api_base, model, retry_config)
+        super().__init__(api_key, api_base, model, retry_config, temperature)
 
         # Initialize OpenAI client
         self.client = AsyncOpenAI(
@@ -65,6 +67,7 @@ class OpenAIClient(LLMClientBase):
         params = {
             "model": self.model,
             "messages": api_messages,
+            "temperature": self.temperature,
             # Enable reasoning_split to separate thinking content
             "extra_body": {"reasoning_split": True},
         }

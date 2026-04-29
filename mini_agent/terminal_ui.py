@@ -168,9 +168,27 @@ def print_help(topic: str | None = None) -> None:
         print(help_text)
         return
 
+    if topic_normalized == "cleanup-auto-skills":
+        help_text = f"""
+{Colors.BOLD}{Colors.BRIGHT_YELLOW}Cleanup Auto Skills Command:{Colors.RESET}
+    {Colors.BRIGHT_GREEN}mini-agent cleanup-auto-skills{Colors.RESET}                 Preview cleanup actions for generated auto skills
+    {Colors.BRIGHT_GREEN}mini-agent cleanup-auto-skills --apply{Colors.RESET}         Apply the cleanup and archive stale variants
+    {Colors.BRIGHT_GREEN}mini-agent cleanup-auto-skills --skills-dir DIR{Colors.RESET} Use a custom generated-skills directory
+    {Colors.BRIGHT_GREEN}mini-agent cleanup-auto-skills --skip-candidates{Colors.RESET} Ignore the _candidates/ pool
+    {Colors.BRIGHT_GREEN}mini-agent help cleanup-auto-skills{Colors.RESET}            Show this help topic
+
+{Colors.BOLD}{Colors.BRIGHT_YELLOW}What it does:{Colors.RESET}
+    - Finds auto-generated skills whose metadata source is {Colors.BRIGHT_GREEN}mini-agent{Colors.RESET}
+    - Archives stale historical variants under {Colors.BRIGHT_GREEN}_archived/{Colors.RESET}
+    - Syncs mismatched frontmatter names with their directory names
+    - Defaults to a dry run so you can review the plan before changing files
+"""
+        print(help_text)
+        return
+
     if topic_normalized and topic_normalized not in {"general", "cli", "commands", "interactive"}:
         print(f"{Colors.YELLOW}Unknown help topic: {topic}{Colors.RESET}")
-        print(f"{Colors.DIM}Showing the main help instead. Available topic: log{Colors.RESET}\n")
+        print(f"{Colors.DIM}Showing the main help instead. Available topics: log, cleanup-auto-skills{Colors.RESET}\n")
 
     help_text = f"""
 {Colors.BOLD}{Colors.BRIGHT_YELLOW}Mini-Agent CLI:{Colors.RESET}
@@ -178,8 +196,10 @@ def print_help(topic: str | None = None) -> None:
     {Colors.BRIGHT_GREEN}mini-agent -p \"<text>\"{Colors.RESET}     Run a prompt non-interactively and exit
     {Colors.BRIGHT_GREEN}mini-agent --workspace DIR{Colors.RESET} Use a specific workspace directory
     {Colors.BRIGHT_GREEN}mini-agent log [file]{Colors.RESET}      Show logs or read a specific log file
+    {Colors.BRIGHT_GREEN}mini-agent cleanup-auto-skills{Colors.RESET} Review or clean historical generated skills
     {Colors.BRIGHT_GREEN}mini-agent help [topic]{Colors.RESET}    Show this help or a topic-specific help
     {Colors.BRIGHT_GREEN}mini-agent help log{Colors.RESET}      Show log command help
+    {Colors.BRIGHT_GREEN}mini-agent help cleanup-auto-skills{Colors.RESET} Show cleanup command help
     {Colors.BRIGHT_GREEN}mini-agent --version{Colors.RESET}       Show version information
 
 {Colors.BOLD}{Colors.BRIGHT_YELLOW}Interactive Commands:{Colors.RESET}
