@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import yaml
 
@@ -27,6 +28,7 @@ class QueryProfile:
 
     raw: str
     tokens: List[str]
+    url_tokens: List[str]
     compact: str
 
 
@@ -81,6 +83,35 @@ class SkillLoader:
 
     _TOKEN_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+|[A-Za-z0-9][A-Za-z0-9._/-]*")
     _TOKEN_SPLIT_PATTERN = re.compile(r"[._/-]+")
+    _URL_PATTERN = re.compile(r"https?://[^\s)]+|www\.[^\s)]+", re.IGNORECASE)
+    _URL_TOKEN_STOPWORDS = {
+        "http",
+        "https",
+        "www",
+        "com",
+        "cn",
+        "net",
+        "org",
+        "io",
+        "co",
+        "homepage",
+        "home",
+        "index",
+        "question",
+        "questions",
+        "page",
+        "pages",
+        "html",
+        "htm",
+    }
+    _AUTO_SELECT_BLOCKING_WARNINGS = {
+        "environment-specific-data-detected",
+        "multiple-failed-steps",
+        "partial-completion-detected",
+        "requirement-mismatch",
+        "incomplete-tool-results",
+        "requested-action-not-observed",
+    }
 
     def __init__(
         self,
@@ -191,11 +222,38 @@ class SkillLoader:
     def _build_query_profile(self, query: str) -> QueryProfile:
         """Build a reusable query profile for ranking and context extraction."""
         normalized = query.strip()
+        query_without_urls = self._URL_PATTERN.sub(" ", normalized)
         return QueryProfile(
             raw=normalized,
-            tokens=self._tokenize(normalized),
-            compact=self._compact_text(normalized),
+            # URL 里的 `com`、`question` 之类碎片很容易把无关技能误打高分；
+            # 主查询词用去 URL 文本，URL 只保留少量主机/路径信号单独弱化参与排序。
+            tokens=self._tokenize(query_without_urls),
+            url_tokens=self._extract_url_tokens(normalized),
+            compact=self._compact_text(query_without_urls),
         )
+
+    def _extract_url_tokens(self, text: str) -> List[str]:
+        """Extract a small set of distinctive URL tokens for weak relevance hints."""
+        tokens: List[str] = []
+        for raw_url in self._URL_PATTERN.findall(text):
+            candidate = raw_url
+            if raw_url.lower().startswith("www."):
+                candidate = f"https://{raw_url}"
+
+            parsed = urlparse(candidate)
+            host_parts = [part for part in parsed.netloc.lower().split(".") if part]
+            path_parts = [part for part in self._TOKEN_SPLIT_PATTERN.split(parsed.path.lower()) if part]
+
+            for part in [*host_parts, *path_parts]:
+                for subtoken in self._TOKEN_PATTERN.findall(part):
+                    normalized = subtoken.lower().strip()
+                    if self._contains_han(normalized):
+                        continue
+                    if len(normalized) <= 3 or normalized in self._URL_TOKEN_STOPWORDS:
+                        continue
+                    tokens.extend(self._expand_token(normalized))
+
+        return self._unique_ordered_strings(tokens)
 
     def _field_token_score(self, text: str, tokens: List[str], weight: int) -> int:
         """Return a weighted score for token matches inside a text field."""
@@ -236,6 +294,33 @@ class SkillLoader:
             if part
         )
 
+    def _get_auto_skill_warnings(self, skill: Skill) -> set[str]:
+        """Return normalized warning tags for auto-generated skills."""
+        metadata = skill.metadata if isinstance(skill.metadata, dict) else {}
+        auto_skill = metadata.get("auto_skill")
+        if not isinstance(auto_skill, dict):
+            return set()
+
+        warnings = auto_skill.get("warnings")
+        if not isinstance(warnings, list):
+            return set()
+
+        return {
+            str(item).strip().lower()
+            for item in warnings
+            if str(item).strip()
+        }
+
+    def _should_auto_select_skill(self, skill: Skill) -> bool:
+        """Return whether a skill is safe to auto-inject for the current turn."""
+        metadata = skill.metadata if isinstance(skill.metadata, dict) else {}
+        if str(metadata.get("source") or "").strip().lower() != "mini-agent":
+            return True
+
+        blocking_warnings = self._get_auto_skill_warnings(skill) & self._AUTO_SELECT_BLOCKING_WARNINGS
+        # 这些技能仍然允许通过 list_skills / get_skill 手动检查；这里只阻止自动注入，避免把“带噪声的旧经验”再次放大。
+        return not blocking_warnings
+
     def _score_skill(self, skill: Skill, query: QueryProfile) -> int:
         """Score how relevant a skill is for the query."""
         metadata_text = self._flatten_metadata(skill.metadata).lower()
@@ -257,6 +342,13 @@ class SkillLoader:
             score += self._field_token_score(section.heading, query.tokens, 4)
         score += self._field_token_score(skill.content, query.tokens, 2)
 
+        # 仅把 URL token 作为弱信号，并且只匹配技能名/工具/触发器等高精度字段，
+        # 避免 `recommendquestion` 这类 URL 片段把 `internal-comms` 之类无关技能误选进来。
+        score += self._field_token_score(skill.name, query.url_tokens, 4)
+        score += self._field_token_score(" ".join(skill.tools), query.url_tokens, 4)
+        score += self._field_token_score(" ".join(skill.triggers), query.url_tokens, 3)
+        score += self._field_token_score(" ".join(skill.tags), query.url_tokens, 2)
+
         if self._matches_all_tokens(
             " ".join(
                 part
@@ -276,6 +368,41 @@ class SkillLoader:
             score += 10
 
         return score
+
+    def _is_autobrowser_skill(self, skill: Skill) -> bool:
+        """Return True when the skill is clearly about autobrowser usage."""
+        searchable = " ".join(
+            part
+            for part in [
+                skill.name,
+                skill.description,
+                " ".join(skill.tools),
+                " ".join(skill.triggers),
+                " ".join(skill.tags),
+            ]
+            if part
+        ).lower()
+        return "autobrowser" in searchable
+
+    def _build_skill_guardrails(self, skill: Skill) -> List[str]:
+        """Return short skill-specific guardrails that should always stay visible."""
+        if not self._is_autobrowser_skill(skill):
+            return []
+
+        return [
+            "### CLI Guardrails",
+            "- Bootstrap the session with supported commands such as `autobrowser.cmd server start` and `autobrowser.cmd connect`; do not use unsupported commands like `autobrowser.cmd start --headless`.",
+            "- Use supported navigation commands such as `autobrowser.cmd open <url>` or `autobrowser.cmd goto <url>`; do not assume an unsupported `autobrowser.cmd navigate` subcommand exists.",
+            "- Use one `find` strategy at a time, for example `find text \"我来答\"`; do not use `find role=text ...`.",
+            "- `click` accepts a selector or a ref returned by `find`/`snapshot`; do not use `click --text ...`.",
+            "- Prefer `autobrowser.cmd wait ms <milliseconds>` for page waits; do not chain shell-level `timeout` commands into autobrowser calls on Windows.",
+            "- `scroll` expects an explicit selector and deltas; do not call `autobrowser.cmd scroll 500`. For page scrolling, prefer `autobrowser.cmd eval \"window.scrollBy(0, 500)\"` or pass a real selector such as `body`.",
+            "- For iframe-based rich-text editors (for example UEditor), select the real iframe with `autobrowser.cmd frame \".edui-editor-iframeholder iframe\"`, type into `body`, then switch back with `autobrowser.cmd frame top` before clicking the page-level submit button.",
+            "- Do not guess answer submit buttons with generic selectors like `[class*=submit]`; they can match unrelated feedback/report controls such as `accusation-btn-submit`. Prefer an exact answer-submit selector/text such as `.new-editor-deliver-btn` or a verified ref from `snapshot`.",
+            "- In PowerShell, do not use heredoc or `<` / `>` redirection with `autobrowser.cmd eval`; prefer `write_file` + `autobrowser.cmd eval --file <path>` or a single quoted one-liner.",
+            "- When you need eval output or editor-state checks, return the value directly instead of relying only on `console.log(...)`.",
+            "- Verify submission with durable post-submit signals such as `location.href.includes(\"newAnswer=1\")`, a visible `我的回答` / `修改回答` block, or disappearance of the answer form; do not rely only on `提交成功` text.",
+        ]
 
     def _parse_heading(self, line: str) -> tuple[str, int] | None:
         """Parse a markdown heading line into heading text and level."""
@@ -438,6 +565,10 @@ class SkillLoader:
             metadata_lines.append("Platform: " + skill.platform)
         if metadata_lines:
             lines.append("\n".join(metadata_lines))
+
+        guardrails = self._build_skill_guardrails(skill)
+        if guardrails:
+            lines.append("\n".join(guardrails))
 
         excerpt, truncated = self._build_relevant_excerpt(skill, query, max_content_chars=max_content_chars)
         if excerpt:
@@ -668,6 +799,8 @@ class SkillLoader:
 
         scored_skills = []
         for skill in self.loaded_skills.values():
+            if not self._should_auto_select_skill(skill):
+                continue
             score = self._score_skill(skill, query_profile)
             if score > 0:
                 scored_skills.append((score, skill.name.lower(), skill))
@@ -729,7 +862,12 @@ class SkillLoader:
         Returns:
             Metadata-only prompt string
         """
-        if not self.loaded_skills:
+        visible_skills = [
+            skill
+            for skill in sorted(self.loaded_skills.values(), key=lambda item: item.name.lower())
+            if self._should_auto_select_skill(skill)
+        ]
+        if not visible_skills:
             return ""
 
         prompt_parts = ["## Available Skills\n"]
@@ -737,10 +875,13 @@ class SkillLoader:
         prompt_parts.append(
             "Use `list_skills` when you need the complete loaded skill inventory, including bundled and user-installed skills.\n"
         )
+        prompt_parts.append(
+            "High-risk auto-generated skills may be omitted from this startup summary; use `list_skills` to inspect them manually when needed.\n"
+        )
         prompt_parts.append("Load a skill's full content using the appropriate skill tool when needed.\n")
 
         # List all skills with their descriptions
-        for skill in sorted(self.loaded_skills.values(), key=lambda item: item.name.lower()):
+        for skill in visible_skills:
             prompt_parts.append(f"- `{skill.name}`: {skill.description}")
 
         return "\n".join(prompt_parts)

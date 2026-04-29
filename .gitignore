@@ -82,3 +82,4 @@ docs/assets/preview.html
 .mini-agent/
 .agent_memory.json
 .playwright-mcp/
+tmp/

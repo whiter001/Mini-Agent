@@ -229,6 +229,41 @@ Even more content to make this realistic.
         assert "Section 2" not in metadata_prompt
 
 
+def test_get_skills_metadata_prompt_skips_risky_auto_generated_skills():
+        """High-risk auto-generated skills should stay out of the startup metadata summary."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+                safe_dir = Path(tmpdir) / "autobrowser"
+                safe_dir.mkdir()
+                create_test_skill(safe_dir, "autobrowser", "Browser automation helper", "Use this skill to drive autobrowser.")
+
+                risky_dir = Path(tmpdir) / "auto-unsafe"
+                risky_dir.mkdir()
+                (risky_dir / "SKILL.md").write_text(
+                        """---
+name: auto-unsafe
+description: Risky auto-generated workflow
+metadata:
+    source: mini-agent
+    auto_skill:
+        warnings:
+            - multiple-failed-steps
+---
+
+Do not auto-suggest this workflow.
+""",
+                        encoding="utf-8",
+                )
+
+                loader = SkillLoader(tmpdir)
+                loader.discover_skills()
+
+                metadata_prompt = loader.get_skills_metadata_prompt()
+
+                assert "autobrowser" in metadata_prompt
+                assert "auto-unsafe" not in metadata_prompt
+                assert "list_skills" in metadata_prompt
+
+
 def test_nested_document_path_processing():
     """Test processing of nested document references (Level 3+)"""
     with tempfile.TemporaryDirectory() as tmpdir:

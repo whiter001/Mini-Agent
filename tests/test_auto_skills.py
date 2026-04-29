@@ -133,6 +133,72 @@ def test_select_relevant_skills_prefers_mixed_language_triggers():
         assert selected[0].name == "browser-flow"
 
 
+def test_select_relevant_skills_ignores_generic_url_fragment_noise():
+    """Generic URL fragments like `question` or `com` should not pull in unrelated skills."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        autobrowser_dir = Path(tmpdir) / "autobrowser"
+        autobrowser_dir.mkdir()
+        create_test_skill(
+            autobrowser_dir,
+            "autobrowser",
+            "Autobrowser workflow helper",
+            "Use this skill when you need to drive autobrowser from the CLI.",
+            metadata="tools:\n  - autobrowser\ntriggers:\n  - 用autobrowser答题\n",
+        )
+
+        internal_dir = Path(tmpdir) / "internal-comms"
+        internal_dir.mkdir()
+        create_test_skill(
+            internal_dir,
+            "internal-comms",
+            "Internal communication helper",
+            "Use this skill for FAQ answers, updates, and common questions.",
+        )
+
+        loader = SkillLoader(tmpdir)
+        loader.discover_skills()
+
+        selected = loader.select_relevant_skills(
+            "用autobrowser帮我在https://zhidao.baidu.com/ihome/homepage/recommendquestion里答3道题",
+            max_skills=2,
+        )
+
+        assert [skill.name for skill in selected] == ["autobrowser"]
+
+
+def test_select_relevant_skills_can_still_use_distinctive_url_host_tokens():
+    """Distinctive host tokens from a URL should still help site-specific skills match."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        github_dir = Path(tmpdir) / "github"
+        github_dir.mkdir()
+        create_test_skill(
+            github_dir,
+            "github",
+            "GitHub review helper",
+            "Use this skill for GitHub pull requests and issues.",
+            metadata="tags:\n  - git\n  - review\n",
+        )
+
+        generic_dir = Path(tmpdir) / "general"
+        generic_dir.mkdir()
+        create_test_skill(
+            generic_dir,
+            "general",
+            "General helper",
+            "Use this skill for generic writing and task support.",
+        )
+
+        loader = SkillLoader(tmpdir)
+        loader.discover_skills()
+
+        selected = loader.select_relevant_skills(
+            "Please review https://github.com/example/project/pull/123",
+            max_skills=1,
+        )
+
+        assert [skill.name for skill in selected] == ["github"]
+
+
 def test_build_auto_skill_context_returns_system_message():
     """Auto skill context should be wrapped as a temporary system message."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -193,6 +259,38 @@ Publish packages and update release notes.
         assert "### Troubleshooting" in prompt
         assert "### Release Checklist" not in prompt
         assert "Skill Root Directory" in prompt
+
+
+def test_auto_skill_prompt_adds_autobrowser_guardrails():
+    """Auto-loaded autobrowser context should include concrete CLI guardrails for common misuse patterns."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        browser_dir = Path(tmpdir) / "autobrowser"
+        browser_dir.mkdir()
+        create_test_skill(
+            browser_dir,
+            "autobrowser",
+            "Autobrowser workflow helper",
+            "Use this skill when you need to drive autobrowser from the CLI.",
+            metadata="tools:\n  - autobrowser\nplatform: windows\n",
+        )
+
+        loader = SkillLoader(tmpdir)
+        loader.discover_skills()
+
+        prompt = loader.get_auto_skills_prompt("用autobrowser打开页面并回答问题", max_skills=1)
+
+        assert "CLI Guardrails" in prompt
+        assert "start --headless" in prompt
+        assert "navigate" in prompt
+        assert "find text \"我来答\"" in prompt
+        assert "click --text" in prompt
+        assert "wait ms" in prompt
+        assert "scroll 500" in prompt
+        assert ".edui-editor-iframeholder iframe" in prompt
+        assert ".new-editor-deliver-btn" in prompt
+        assert "newAnswer=1" in prompt
+        assert "[class*=submit]" in prompt
+        assert "eval --file" in prompt
 
 
 def test_build_turn_context_respects_auto_skill_toggle():
@@ -534,6 +632,99 @@ def test_auto_skill_creation_rejects_partial_completion_when_requested_count_not
         assert "requirement-mismatch" in result.quality_warnings
 
 
+def test_auto_skill_creation_rejects_multilingual_failure_summary():
+    """Chinese failure summaries should not be mistaken for successful reusable workflows."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        skill_dir = Path(tmpdir) / "skills"
+        loader = SkillLoader(str(skill_dir))
+        turn_messages = build_turn_messages(
+            "用autobrowser帮我在百度知道里答题",
+            [
+                ("bash", {"command": "autobrowser.cmd connect"}, "Connected successfully."),
+                ("bash", {"command": "autobrowser.cmd goto https://zhidao.baidu.com/question/1.html"}, "Opened the question page."),
+                ("bash", {"command": "autobrowser.cmd snapshot"}, "Captured snapshot successfully."),
+                ("bash", {"command": "autobrowser.cmd click 我来答"}, "Command failed with exit code 1\nelement not found: 我来答"),
+                ("bash", {"command": "autobrowser.cmd screenshot"}, "Captured screenshot successfully."),
+            ],
+        )
+
+        result = maybe_create_auto_skill(
+            loader,
+            turn_messages,
+            "很抱歉，当前页面需要登录，autobrowser 无法处理登录验证流程。",
+            auto_skill_dir=str(skill_dir),
+        )
+
+        assert result.created is False
+        assert result.reason == "quality-gate"
+        assert "final-result-not-successful" in result.quality_warnings
+
+
+def test_auto_skill_creation_rejects_answering_task_without_submission_steps():
+    """Visiting question pages is not enough when the user asked to actually answer them."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        skill_dir = Path(tmpdir) / "skills"
+        loader = SkillLoader(str(skill_dir))
+        turn_messages = build_turn_messages(
+            "用autobrowser帮我在百度知道里答3道题",
+            [
+                ("bash", {"command": "autobrowser.cmd goto https://zhidao.baidu.com/question/1.html"}, "Opened question 1."),
+                ("bash", {"command": "autobrowser.cmd eval \"document.body.innerText.substring(0,500)\""}, "python能做什么？ 1个回答 我来答"),
+                ("bash", {"command": "autobrowser.cmd goto https://zhidao.baidu.com/question/2.html"}, "Opened question 2."),
+                ("bash", {"command": "autobrowser.cmd eval \"document.body.innerText.substring(0,500)\""}, "pycharm下载速度慢 1个回答 我来答"),
+                ("bash", {"command": "autobrowser.cmd goto https://zhidao.baidu.com/question/3.html"}, "Opened question 3."),
+                ("bash", {"command": "autobrowser.cmd eval \"document.body.innerText.substring(0,500)\""}, "js返回上一页并刷新的几种方法有哪些？ 1个回答 我来答"),
+            ],
+        )
+
+        result = maybe_create_auto_skill(
+            loader,
+            turn_messages,
+            "我已经成功访问了百度知道推荐问题页面中的3道题，这些题目都已有人回答。",
+            auto_skill_dir=str(skill_dir),
+        )
+
+        assert result.created is False
+        assert result.reason == "quality-gate"
+        assert "requirement-mismatch" in result.quality_warnings
+        assert "requested-action-not-observed" in result.quality_warnings
+
+
+def test_auto_skill_creation_accepts_answering_workflow_with_submission_steps():
+    """Answering workflows should still be reusable when the trace shows real drafting and submission."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        skill_dir = Path(tmpdir) / "skills"
+        loader = SkillLoader(str(skill_dir))
+        turn_messages = build_turn_messages(
+            "用autobrowser帮我在百度知道里答3道题",
+            [
+                ("get_skill", {"skill_name": "autobrowser"}, "Loaded autobrowser skill."),
+                ("bash", {"command": "autobrowser.cmd goto https://zhidao.baidu.com/question/1.html"}, "Opened question 1."),
+                ("bash", {"command": "autobrowser.cmd click 我来答"}, '{"found": true, "selector": "我来答"}'),
+                ("bash", {"command": 'autobrowser.cmd type textarea.answer "answer 1"'}, "Typed answer 1 into the answer editor."),
+                ("bash", {"command": "autobrowser.cmd click 提交回答"}, "Submitted answer 1 successfully."),
+                ("bash", {"command": "autobrowser.cmd goto https://zhidao.baidu.com/question/2.html"}, "Opened question 2."),
+                ("bash", {"command": "autobrowser.cmd click 我来答"}, '{"found": true, "selector": "我来答"}'),
+                ("bash", {"command": 'autobrowser.cmd type textarea.answer "answer 2"'}, "Typed answer 2 into the answer editor."),
+                ("bash", {"command": "autobrowser.cmd click 提交回答"}, "Submitted answer 2 successfully."),
+                ("bash", {"command": "autobrowser.cmd goto https://zhidao.baidu.com/question/3.html"}, "Opened question 3."),
+                ("bash", {"command": "autobrowser.cmd click 我来答"}, '{"found": true, "selector": "我来答"}'),
+                ("bash", {"command": 'autobrowser.cmd type textarea.answer "answer 3"'}, "Typed answer 3 into the answer editor."),
+                ("bash", {"command": "autobrowser.cmd click 提交回答"}, "Submitted answer 3 successfully."),
+            ],
+        )
+
+        result = maybe_create_auto_skill(
+            loader,
+            turn_messages,
+            "已成功回答3道题，并提交了对应答案。",
+            auto_skill_dir=str(skill_dir),
+        )
+
+        assert result.created is True
+        assert result.tier == "approved"
+
+
 def test_auto_skill_content_sanitizes_environment_specific_values():
     """Generated skill content should replace absolute paths, timestamps, and IDs with placeholders."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -568,6 +759,47 @@ def test_auto_skill_content_sanitizes_environment_specific_values():
         assert "<path>" in content
         assert "<timestamp>" in content
         assert "<id>" in content
+
+
+def test_select_relevant_skills_skips_risky_auto_generated_skill():
+    """Risky auto-generated skills should stay manually inspectable but not auto-selected."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        risky_dir = Path(tmpdir) / "auto-zhidao-answer"
+        risky_dir.mkdir()
+        create_test_skill(
+            risky_dir,
+            "auto-zhidao-answer",
+            "Auto-generated workflow for 用autobrowser帮我在百度知道里答题",
+            "Use this skill to answer Baidu Zhidao questions with autobrowser.",
+            metadata=(
+                "metadata:\n"
+                "  source: mini-agent\n"
+                "  auto_skill:\n"
+                "    tier: approved\n"
+                "    warnings:\n"
+                "      - environment-specific-data-detected\n"
+                "      - multiple-failed-steps\n"
+            ),
+        )
+
+        autobrowser_dir = Path(tmpdir) / "autobrowser"
+        autobrowser_dir.mkdir()
+        create_test_skill(
+            autobrowser_dir,
+            "autobrowser",
+            "Autobrowser workflow helper",
+            "Use this skill when you need to drive autobrowser from the CLI.",
+            metadata="tools:\n  - autobrowser\ntriggers:\n  - 用autobrowser答题\n",
+        )
+
+        loader = SkillLoader(tmpdir)
+        loader.discover_skills()
+
+        assert loader.get_skill("auto-zhidao-answer") is not None
+
+        selected = loader.select_relevant_skills("用autobrowser帮我在百度知道里答3道题", max_skills=2)
+
+        assert [skill.name for skill in selected] == ["autobrowser"]
 
 
 @pytest.mark.parametrize("invalid_value", [0, -1])

@@ -191,6 +191,16 @@ Tips:
   - Quote file paths with spaces: cd "My Documents"
   - Chain dependent commands with semicolon: git add . ; git commit -m "msg"
   - Use absolute paths instead of cd when possible
+    - For Windows CLI tools that accept JavaScript or stdin (for example `autobrowser.cmd eval`), avoid PowerShell redirection like `<` and `>`; prefer `--file`/`--base64` or a single fully quoted one-liner
+        - Bootstrap autobrowser with supported commands like `autobrowser.cmd server start` / `autobrowser.cmd connect`; do not assume a `start --headless` subcommand exists
+        - Navigate with supported autobrowser commands like `open` / `goto`; do not assume a `navigate` subcommand exists
+        - For `autobrowser.cmd find`, use one strategy at a time (for example `find text "我来答"`); do not combine strategies like `find role=text ...`
+        - For `autobrowser.cmd click`, pass a selector or a ref from `find` / `snapshot`; do not use `click --text ...`
+        - Prefer `autobrowser.cmd wait ms <milliseconds>` for waits; do not chain Windows shell `timeout` into autobrowser commands
+                - For page scrolling, prefer `eval "window.scrollBy(0, 500)"` or pass an explicit selector to `scroll`; do not call `autobrowser.cmd scroll 500`
+                - For iframe-based rich-text editors (for example UEditor), select the real iframe with `frame "<iframe-selector>"`, type into `body`, then `frame top` before clicking the page-level submit button
+                - Avoid generic submit selectors like `[class*=submit]`; prefer exact answer-submit selectors such as `.new-editor-deliver-btn`, and verify success via durable signals like `newAnswer=1` or a visible `我的回答` block
+    - Quote snapshot refs that include page epochs, for example `"@e1#p71"`, so PowerShell does not mangle the selector
   - Common service commands like vite, npm run dev, uvicorn, and python -m http.server are auto-started in background
   - For background commands, monitor with bash_output and terminate with bash_kill
 

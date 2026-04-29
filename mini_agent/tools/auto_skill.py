@@ -48,8 +48,43 @@ _ERROR_MARKERS = (
     "syntaxerror",
     "element not found",
     "not a valid selector",
+    "requires login",
+    "need to log in",
+    "please log in",
+    "无法完成",
+    "未能完成",
+    "无法处理",
+    "未能处理",
+    "无法回答",
+    "未能回答",
+    "无法继续",
+    "未能继续",
+    "请先登录",
+    "需要登录",
+    "登录验证",
 )
-_SUCCESS_BLOCKERS = ("couldn't be completed", "unable to complete", "task failed")
+_SUCCESS_BLOCKERS = (
+    "couldn't be completed",
+    "unable to complete",
+    "task failed",
+    "i'm sorry",
+    "sorry, but",
+    "requires login",
+    "need to log in",
+    "please log in",
+    "很抱歉",
+    "无法完成",
+    "未能完成",
+    "无法处理",
+    "未能处理",
+    "无法回答",
+    "未能回答",
+    "无法继续",
+    "未能继续",
+    "请先登录",
+    "需要登录",
+    "登录验证",
+)
 _PARTIAL_COMPLETION_MARKERS = (
     "只显示了",
     "仅显示了",
@@ -79,13 +114,67 @@ _PARTIAL_COMPLETION_MARKERS = (
     "limited to",
 )
 _REQUEST_COUNT_PATTERNS = (
-    re.compile(r"\b(?:top|first|latest)\s+(\d+)\s*(?:items?|results?|messages?|tweets?|posts?|records?|entries?)\b", re.IGNORECASE),
-    re.compile(r"\b(\d+)\s*(?:items?|results?|messages?|tweets?|posts?|records?|entries?)\b", re.IGNORECASE),
-    re.compile(r"(\d+)\s*(?:条|个|篇|项)\s*(?:消息|推文|帖子|结果|记录|内容)?"),
+    re.compile(r"\b(?:top|first|latest)\s+(\d+)\s*(?:items?|results?|messages?|tweets?|posts?|records?|entries?|questions?|answers?|replies?)\b", re.IGNORECASE),
+    re.compile(r"\b(\d+)\s*(?:items?|results?|messages?|tweets?|posts?|records?|entries?|questions?|answers?|replies?)\b", re.IGNORECASE),
+    re.compile(r"(\d+)\s*(?:条|个|篇|项|道|题)\s*(?:消息|推文|帖子|结果|记录|内容|问题|题目|题|回答|回复)?"),
 )
 _LIMITED_RESULT_COUNT_PATTERNS = (
     re.compile(r"(?:只|仅|目前只|当前只|当前页面只|只能|仅能)\s*(?:显示|获取|返回|找到|抓取|加载|看到|提供)?\s*[^\d]{0,12}(\d+)\s*(?:条|个|篇|项)?"),
     re.compile(r"(?:only|just|currently|could only|limited to)\s*(?:show|display|find|fetch|get|return|load)?(?:ed|s)?\s*[^\d]{0,12}(\d+)\s*(?:items?|results?|messages?|tweets?|posts?|records?|entries?)?", re.IGNORECASE),
+)
+_ANSWER_REQUEST_PATTERNS = (
+    re.compile(r"答\s*\d*\s*(?:道|个)?\s*(?:题|问题|题目)"),
+    re.compile(r"(?:回答|作答|答复|回复)\s*\d*\s*(?:道|个)?\s*(?:题|问题|题目)"),
+    re.compile(r"\b(?:answer|reply to|respond to)\s+\d+\s+(?:questions?|replies?)\b", re.IGNORECASE),
+    re.compile(r"答题"),
+)
+_ANSWER_ENTRY_MARKERS = (
+    "我来答",
+    "answer box",
+    "answer editor",
+    "reply box",
+    "回答框",
+    "回答区域",
+)
+_ANSWER_AUTHORING_PATTERNS = (
+    re.compile(r"\b(?:fill|type)\b", re.IGNORECASE),
+    re.compile(r"(?:textarea|contenteditable|editor|reply-box|answer-box)", re.IGNORECASE),
+    re.compile(r"(?:输入回答|填写回答|回答内容|撰写回答|编辑回答)"),
+)
+_ANSWER_SUBMISSION_PATTERNS = (
+    re.compile(r"(?:提交回答|提交答案|发布回答|发布答案|发表回答|发送回复|提交回复|发布回复)"),
+    re.compile(r"\b(?:submit|post|publish|send)\b", re.IGNORECASE),
+    re.compile(r"(?:\.submit\s*\(|submit\s*\()", re.IGNORECASE),
+)
+_ANSWER_SUCCESS_MARKERS = (
+    "回答成功",
+    "提交成功",
+    "发布成功",
+    "发送成功",
+    "已回答",
+    "已提交",
+    "已发布",
+    "submitted answer",
+    "posted answer",
+    "reply sent",
+    "answered successfully",
+)
+_ANSWER_BROWSE_ONLY_MARKERS = (
+    "访问了",
+    "查看了",
+    "浏览了",
+    "打开了",
+    "获取了",
+    "visited",
+    "viewed",
+    "browsed",
+    "opened",
+)
+_EXISTING_ANSWER_SUMMARY_MARKERS = (
+    "已有回答",
+    "已有人回答",
+    "already answered",
+    "existing answer",
 )
 _WINDOWS_PATH_PATTERN = re.compile(r"[A-Za-z]:\\(?:[^\\/:*?\"<>|\r\n]+\\)*[^\\/:*?\"<>|\r\n]*")
 _UNIX_PATH_PATTERN = re.compile(r"(?<![A-Za-z0-9_])/(?:[^/\s]+/)*[^/\s]+")
@@ -258,7 +347,10 @@ def _evaluate_auto_skill_quality(
     successful_steps = [step for step in completed_steps if not _looks_like_error(_stringify_message_content(step.get("result", "")))]
     failed_steps = [step for step in completed_steps if _looks_like_error(_stringify_message_content(step.get("result", "")))]
     completion_gap = _analyze_completion_gap(user_request, final_result)
-    successful = _looks_like_success(final_result) and not completion_gap["requirement_mismatch"]
+    # “答3道题”这类任务不能只看最终总结像不像成功，还要确认轨迹里真的出现了写回答/提交流程。
+    action_gap = _analyze_requested_action_gap(user_request, trace, final_result)
+    requirement_mismatch = completion_gap["requirement_mismatch"] or action_gap["requirement_mismatch"]
+    successful = _looks_like_success(final_result) and not requirement_mismatch
     recovered = bool(failed_steps) and successful
     stable_completion = _has_stable_completion(trace, successful)
     meets_step_threshold = len(trace) >= min_tool_calls
@@ -286,7 +378,12 @@ def _evaluate_auto_skill_quality(
         "requested_count": completion_gap["requested_count"],
         "reported_count": completion_gap["reported_count"],
         "partial_completion": completion_gap["partial_completion"],
-        "requirement_mismatch": completion_gap["requirement_mismatch"],
+        "task_kind": action_gap["task_kind"],
+        "required_action_count": action_gap["required_action_count"],
+        "observed_action_count": action_gap["observed_action_count"],
+        "observed_authoring_count": action_gap["observed_authoring_count"],
+        "action_requirement_mismatch": action_gap["requirement_mismatch"],
+        "requirement_mismatch": requirement_mismatch,
     }
 
     reasons: list[str] = []
@@ -301,8 +398,10 @@ def _evaluate_auto_skill_quality(
 
     if completion_gap["partial_completion"]:
         warnings.append("partial-completion-detected")
-    if completion_gap["requirement_mismatch"]:
+    if requirement_mismatch:
         warnings.append("requirement-mismatch")
+    if action_gap["requirement_mismatch"]:
+        warnings.append("requested-action-not-observed")
 
     if meets_step_threshold:
         score += 2
@@ -430,6 +529,78 @@ def _analyze_completion_gap(user_request: str, final_result: str) -> dict[str, A
     }
 
 
+def _analyze_requested_action_gap(
+    user_request: str,
+    trace: Sequence[dict[str, Any]],
+    final_result: str,
+) -> dict[str, Any]:
+    lowered_request = user_request.lower()
+    if not _matches_any_pattern(lowered_request, _ANSWER_REQUEST_PATTERNS):
+        return {
+            "task_kind": "",
+            "required_action_count": 0,
+            "observed_action_count": 0,
+            "observed_authoring_count": 0,
+            "requirement_mismatch": False,
+        }
+
+    required_action_count = _extract_requested_count(user_request) or 1
+    observed_action_count = 0
+    observed_authoring_count = 0
+
+    for step in trace:
+        arguments_text = _step_argument_text(step).lower()
+        result_text = _stringify_message_content(step.get("result", "")).lower()
+
+        authoring_signal = (
+            _contains_any(arguments_text, _ANSWER_ENTRY_MARKERS)
+            or _matches_any_pattern(arguments_text, _ANSWER_AUTHORING_PATTERNS)
+            or _matches_any_pattern(result_text, _ANSWER_AUTHORING_PATTERNS)
+        )
+        if authoring_signal:
+            observed_authoring_count += 1
+
+        submission_signal = (
+            _matches_any_pattern(arguments_text, _ANSWER_SUBMISSION_PATTERNS)
+            or _matches_any_pattern(result_text, _ANSWER_SUBMISSION_PATTERNS)
+            or _contains_any(result_text, _ANSWER_SUCCESS_MARKERS)
+        )
+        if submission_signal:
+            observed_action_count += 1
+
+    lowered_result = final_result.lower()
+    browse_only_summary = _contains_any(lowered_result, _ANSWER_BROWSE_ONLY_MARKERS)
+    existing_answer_summary = _contains_any(lowered_result, _EXISTING_ANSWER_SUMMARY_MARKERS)
+    requirement_mismatch = observed_action_count < required_action_count
+    if observed_action_count == 0 and (observed_authoring_count == 0 or browse_only_summary or existing_answer_summary):
+        requirement_mismatch = True
+
+    return {
+        "task_kind": "answering",
+        "required_action_count": required_action_count,
+        "observed_action_count": observed_action_count,
+        "observed_authoring_count": observed_authoring_count,
+        "requirement_mismatch": requirement_mismatch,
+    }
+
+
+def _contains_any(text: str, markers: Sequence[str]) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in markers)
+
+
+def _matches_any_pattern(text: str, patterns: Sequence[re.Pattern]) -> bool:
+    return any(pattern.search(text) for pattern in patterns)
+
+
+def _step_argument_text(step: dict[str, Any]) -> str:
+    parts = [
+        _stringify_message_content(step.get("arguments", "")),
+        _flatten_search_text(step.get("arguments_dict", {})),
+    ]
+    return " ".join(part for part in parts if part)
+
+
 def _looks_like_error(text: str) -> bool:
     lowered = text.lower()
     if not lowered.strip():
@@ -443,6 +614,8 @@ def _looks_like_success(text: str) -> bool:
     lowered = text.lower()
     if not lowered.strip():
         return False
+    # 自动技能质量闸门必须识别中文失败总结，否则中文任务会把“需要登录/无法处理”这类失败结论误判成成功，
+    # 进而把失败轨迹沉淀成可自动加载的技能。
     if any(token in lowered for token in _SUCCESS_BLOCKERS):
         return False
     return not _looks_like_error(text)
