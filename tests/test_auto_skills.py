@@ -12,6 +12,8 @@ from mini_agent.cli import build_turn_context
 from mini_agent.config import ToolsConfig
 from mini_agent.schema import FunctionCall, Message, ToolCall
 from mini_agent.tools.auto_skill import _collect_turn_trace, _merge_guidance_lists, _normalize_string_list, _summarize_final_outcome, build_auto_skill_context, cleanup_auto_skills, maybe_create_auto_skill
+from mini_agent.tools.auto_skill_quality import _contains_environment_specific_data
+from mini_agent.tools.auto_skill_support import _sanitize_summary_text
 from mini_agent.tools.skill_loader import SkillLoader
 
 
@@ -234,7 +236,7 @@ def test_summarize_final_outcome_keeps_reusable_lead_paragraph_only():
 
     summary = _summarize_final_outcome(final_result, max_chars=220)
 
-    assert summary == "成功获取了 **11 条消息**！以下是 https:/<path> 中的 **10 条消息**："
+    assert summary == "成功获取了 **11 条消息**！以下是 https://x.com/home 中的 **10 条消息**："
     assert "### 1." not in summary
 
 
@@ -1051,7 +1053,28 @@ def test_auto_skill_creation_accepts_success_summary_with_numbered_results():
         )
 
         assert result.created is True
+        assert "environment-specific-data-detected" not in result.quality_warnings
         assert "requirement-mismatch" not in result.quality_warnings
+
+
+def test_auto_skill_support_keeps_web_urls_while_sanitizing_local_paths():
+    """Web URLs should remain intact while local absolute paths are still sanitized."""
+    summary = _sanitize_summary_text(
+        "Open https://x.com/home, then inspect /Users/byf/tmp/feed.json at 2026-04-24T17:42:49Z.",
+        max_chars=200,
+    )
+
+    assert "https://x.com/home" in summary
+    assert "/Users/byf/tmp/feed.json" not in summary
+    assert "<path>" in summary
+    assert "<timestamp>" in summary
+
+
+def test_environment_specific_detection_ignores_web_urls():
+    """Web URLs should not trigger environment-specific warnings by themselves."""
+    assert _contains_environment_specific_data("open https://x.com/home and collect posts") is False
+    assert _contains_environment_specific_data("review https://github.com/example/project/pull/123") is False
+    assert _contains_environment_specific_data("read /Users/byf/tmp/feed.json before summarizing") is True
 
 
 def test_auto_skill_creation_rejects_multilingual_failure_summary():

@@ -26,6 +26,7 @@ _STOPWORDS = {
     "to",
     "with",
 }
+_WEB_URL_PATTERN = re.compile(r"https?://[^\s)]+|www\.[^\s)]+", re.IGNORECASE)
 _WINDOWS_PATH_PATTERN = re.compile(r"[A-Za-z]:\\(?:[^\\/:*?\"<>|\r\n]+\\)*[^\\/:*?\"<>|\r\n\s]*")
 _UNIX_PATH_PATTERN = re.compile(r"(?<![A-Za-z0-9_])/(?:[^/\s]+/)*[^/\s]+")
 _TIMESTAMP_PATTERN = re.compile(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\b")
@@ -122,14 +123,38 @@ def _summarize_final_outcome(text: str, *, max_chars: int) -> str:
 
 def _sanitize_multiline_text(text: str, *, max_chars: int) -> str:
     cleaned = _stringify_message_content(text)
+    cleaned, protected_urls = _protect_web_urls(cleaned)
     cleaned = _WINDOWS_PATH_PATTERN.sub("<path>", cleaned)
     cleaned = _UNIX_PATH_PATTERN.sub("<path>", cleaned)
     cleaned = _TIMESTAMP_PATTERN.sub("<timestamp>", cleaned)
     cleaned = _ID_PATTERN.sub("<id>", cleaned)
+    cleaned = _restore_web_urls(cleaned, protected_urls)
     cleaned = cleaned.strip()
     if len(cleaned) > max_chars:
         cleaned = cleaned[: max_chars - 3].rstrip() + "..."
     return cleaned
+
+
+def _strip_web_urls(text: str) -> str:
+    return _WEB_URL_PATTERN.sub(" ", text)
+
+
+def _protect_web_urls(text: str) -> tuple[str, dict[str, str]]:
+    protected_urls: dict[str, str] = {}
+
+    def replace(match: re.Match[str]) -> str:
+        placeholder = f"__mini_agent_web_url_{len(protected_urls)}__"
+        protected_urls[placeholder] = match.group(0)
+        return placeholder
+
+    return _WEB_URL_PATTERN.sub(replace, text), protected_urls
+
+
+def _restore_web_urls(text: str, protected_urls: dict[str, str]) -> str:
+    restored = text
+    for placeholder, url in protected_urls.items():
+        restored = restored.replace(placeholder, url)
+    return restored
 
 
 def _stringify_message_content(value: object) -> str:

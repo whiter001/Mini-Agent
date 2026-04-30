@@ -14,6 +14,7 @@ from .auto_skill_support import (
     _UNIX_PATH_PATTERN,
     _WINDOWS_PATH_PATTERN,
     _dedupe,
+    _strip_web_urls,
     _sanitize_summary_text,
     _stringify_message_content,
     _summarize_final_outcome,
@@ -627,9 +628,10 @@ def _has_stable_completion(trace: Sequence[dict[str, Any]], successful: bool) ->
 
 
 def _contains_environment_specific_data(text: str) -> bool:
+    sanitized = _strip_web_urls(text)
     return bool(
-        _WINDOWS_PATH_PATTERN.search(text)
-        or _UNIX_PATH_PATTERN.search(text)
-        or _TIMESTAMP_PATTERN.search(text)
-        or _ID_PATTERN.search(text)
+        _WINDOWS_PATH_PATTERN.search(sanitized)
+        or _UNIX_PATH_PATTERN.search(sanitized)
+        or _TIMESTAMP_PATTERN.search(sanitized)
+        or _ID_PATTERN.search(sanitized)
     )
