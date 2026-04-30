@@ -486,10 +486,15 @@ def test_agent_ephemeral_context_isolated_from_history():
 
     active_messages = agent._get_active_messages()
 
-    assert len(active_messages) == 3
+    assert len(active_messages) == 2
     assert active_messages[0].role == "system"
+    assert active_messages[0].content.startswith("system")
+    assert "## Current Workspace" in active_messages[0].content
+    assert active_messages[0].content.endswith("auto skills")
     assert active_messages[1].role == "user"
-    assert active_messages[2].role == "system"
+    assert len(agent.messages) == 2
+    assert agent.messages[0].content.startswith("system")
+    assert "auto skills" not in agent.messages[0].content
 
     agent.clear_ephemeral_context()
     assert len(agent._get_active_messages()) == 2

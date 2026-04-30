@@ -115,7 +115,31 @@ class Agent:
 
     def _get_active_messages(self) -> list[Message]:
         """Return the message list used for the next LLM call."""
-        return self.messages + self._ephemeral_messages
+        if not self._ephemeral_messages:
+            return self.messages.copy()
+
+        active_messages = self.messages.copy()
+        ephemeral_system_messages = [message for message in self._ephemeral_messages if message.role == "system"]
+        trailing_ephemeral_messages = [message for message in self._ephemeral_messages if message.role != "system"]
+
+        if ephemeral_system_messages and active_messages and active_messages[0].role == "system":
+            merged_parts = [self._stringify_message_content(active_messages[0].content).strip()]
+            merged_parts.extend(
+                self._stringify_message_content(message.content).strip()
+                for message in ephemeral_system_messages
+            )
+            merged_content = "\n\n".join(part for part in merged_parts if part)
+            active_messages[0] = Message(role="system", content=merged_content)
+        elif ephemeral_system_messages:
+            merged_content = "\n\n".join(
+                self._stringify_message_content(message.content).strip()
+                for message in ephemeral_system_messages
+                if self._stringify_message_content(message.content).strip()
+            )
+            if merged_content:
+                active_messages.insert(0, Message(role="system", content=merged_content))
+
+        return active_messages + trailing_ephemeral_messages
 
     def _check_cancelled(self) -> bool:
         """Check if agent execution has been cancelled.

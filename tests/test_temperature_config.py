@@ -6,7 +6,7 @@ import pytest
 
 from mini_agent.config import Config
 from mini_agent.llm import AnthropicClient, LLMClient, OpenAIClient
-from mini_agent.schema import LLMProvider
+from mini_agent.schema import LLMProvider, Message
 
 
 def test_config_defaults_temperature_to_point_seven(tmp_path):
@@ -80,3 +80,18 @@ async def test_openai_client_passes_temperature_to_api(monkeypatch):
     )
 
     assert captured["temperature"] == pytest.approx(0.7)
+
+
+def test_anthropic_client_merges_multiple_system_messages():
+    client = AnthropicClient(api_key="test-key")
+
+    system_message, api_messages = client._convert_messages(
+        [
+            Message(role="system", content="MAIN SYSTEM"),
+            Message(role="user", content="hello"),
+            Message(role="system", content="EPHEMERAL SKILL"),
+        ]
+    )
+
+    assert system_message == "MAIN SYSTEM\n\nEPHEMERAL SKILL"
+    assert api_messages == [{"role": "user", "content": "hello"}]

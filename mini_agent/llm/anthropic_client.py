@@ -123,12 +123,14 @@ class AnthropicClient(LLMClientBase):
         Returns:
             Tuple of (system_message, api_messages)
         """
-        system_message = None
+        system_parts: list[str] = []
         api_messages = []
 
         for msg in messages:
             if msg.role == "system":
-                system_message = msg.content
+                system_text = msg.content.strip() if isinstance(msg.content, str) else str(msg.content).strip()
+                if system_text:
+                    system_parts.append(system_text)
                 continue
 
             # For user and assistant messages
@@ -178,6 +180,7 @@ class AnthropicClient(LLMClientBase):
                     }
                 )
 
+        system_message = "\n\n".join(system_parts) if system_parts else None
         return system_message, api_messages
 
     def _prepare_request(
