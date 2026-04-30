@@ -91,45 +91,31 @@ class MemoryStore:
         with closing(self._connect()) as conn:
             if self._fts_available:
                 fts_query = self._build_fts_query(query)
-                if not fts_query:
-                    return []
+                if fts_query:
+                    clauses = ["memory_fts MATCH ?"]
+                    params: list[object] = [fts_query]
+                    if kinds:
+                        clauses.append(f"e.kind IN ({','.join('?' for _ in kinds)})")
+                        params.extend(kinds)
 
-                clauses = ["memory_fts MATCH ?"]
-                params: list[object] = [fts_query]
-                if kinds:
-                    clauses.append(f"e.kind IN ({','.join('?' for _ in kinds)})")
-                    params.extend(kinds)
+                    rows = conn.execute(
+                        f"""
+                        SELECT e.id, e.kind, e.title, e.content, e.tags, e.created_at, e.updated_at
+                        FROM memory_fts
+                        JOIN memory_entries e ON memory_fts.rowid = e.id
+                        WHERE {' AND '.join(clauses)}
+                        ORDER BY bm25(memory_fts), e.updated_at DESC
+                        LIMIT ?
+                        """,
+                        [*params, limit],
+                    ).fetchall()
+                    return [self._row_to_entry(row) for row in rows]
 
-                rows = conn.execute(
-                    f"""
-                    SELECT e.id, e.kind, e.title, e.content, e.tags, e.created_at, e.updated_at
-                    FROM memory_fts
-                    JOIN memory_entries e ON memory_fts.rowid = e.id
-                    WHERE {' AND '.join(clauses)}
-                    ORDER BY bm25(memory_fts), e.updated_at DESC
-                    LIMIT ?
-                    """,
-                    [*params, limit],
-                ).fetchall()
-                return [self._row_to_entry(row) for row in rows]
+                # FTS query construction currently targets Latin tokens. For queries like Chinese phrases,
+                # fall back to substring matching instead of returning an empty result set.
+                return self._search_like(conn, query=query, limit=limit, kinds=kinds)
 
-            like = f"%{query}%"
-            clauses = ["(title LIKE ? OR content LIKE ? OR tags LIKE ?)"]
-            params = [like, like, like]
-            if kinds:
-                clauses.append(f"kind IN ({','.join('?' for _ in kinds)})")
-                params.extend(kinds)
-            rows = conn.execute(
-                f"""
-                SELECT id, kind, title, content, tags, created_at, updated_at
-                FROM memory_entries
-                WHERE {' AND '.join(clauses)}
-                ORDER BY updated_at DESC
-                LIMIT ?
-                """,
-                [*params, limit],
-            ).fetchall()
-            return [self._row_to_entry(row) for row in rows]
+            return self._search_like(conn, query=query, limit=limit, kinds=kinds)
 
     def build_system_prompt(self) -> str:
         """Build compact persistent context for the system prompt."""
@@ -257,6 +243,32 @@ class MemoryStore:
                 [*params, limit],
             ).fetchall()
             return [self._row_to_entry(row) for row in rows]
+
+    def _search_like(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        query: str,
+        limit: int,
+        kinds: Sequence[str] | None = None,
+    ) -> list[MemoryEntry]:
+        like = f"%{query}%"
+        clauses = ["(title LIKE ? OR content LIKE ? OR tags LIKE ?)"]
+        params: list[object] = [like, like, like]
+        if kinds:
+            clauses.append(f"kind IN ({','.join('?' for _ in kinds)})")
+            params.extend(kinds)
+        rows = conn.execute(
+            f"""
+            SELECT id, kind, title, content, tags, created_at, updated_at
+            FROM memory_entries
+            WHERE {' AND '.join(clauses)}
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            [*params, limit],
+        ).fetchall()
+        return [self._row_to_entry(row) for row in rows]
 
     def _refresh_snapshots(self, conn: sqlite3.Connection) -> None:
         memory_snapshot = self._render_snapshot(
